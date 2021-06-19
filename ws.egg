@@ -1,0 +1,7 @@
+((synopsis "websocket client library")
+(version 0.1)
+(author "Lo̍h Ka-tsùn")
+(dependencies)
+(component-options (csc-options "-O3"))
+(components
+  (extension ws (source-dependencies ws-utf8.scm))))
