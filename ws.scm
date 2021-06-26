@@ -297,7 +297,7 @@ for (size_t i = 0; i < 20; ++i) {
 	;; validate server handshake
 	(if (not (and
 		  ;; connection: upgrade
-		  (eq? 'upgrade (header-value 'connection h))
+		  (memq? 'upgrade (header-values 'connection h))
 		  ;; upgrade: websocket
 		  (header-value 'upgrade h)
 		  (string-ci=? "websocket" (car(header-value 'upgrade h)))
