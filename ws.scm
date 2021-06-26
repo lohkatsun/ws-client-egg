@@ -1,35 +1,36 @@
 (module
  ws (ws-connect
      ws-connection?
-     
+
      recv-message recv-message-loop
      send-message send-text-message send-binary-message
 
      ws-message?
      message-type message-data* message-data message-size
-     
+
      ;; low-level interface:
-     
+
      opcode->optype optype->opcode
      ;; valid->opcode? control->opcode? data-opcode?
      ;; opcode-connection-close? opcode->continuation?
-     
+
      reason->close-code close-code->reason
      ;; valid-close-code?
-     
+
      ws-frame?
      frame-fin frame-rsv frame-opcode frame-optype frame-mask?
      frame-payload-length frame-payload-data
 
-     send-frame recv-frame)		 
+     send-frame recv-frame)
 
- (import scheme (chicken base) (chicken type) (chicken condition) (chicken io) (chicken format)
+ (import scheme (chicken base) (chicken type) (chicken string)
+	 (chicken condition) (chicken io) (chicken format)
 	 (chicken foreign) (chicken blob) (chicken bitwise)
 	 (chicken random) (chicken tcp)
-	 srfi-4 openssl uri-common intarweb base64)
+	 srfi-4 openssl uri-common intarweb base64 simple-sha1)
 
  (include "ws-utf8")
- 
+
  ;; parameters
 
  (define max-message-size (make-parameter (* 24 (arithmetic-shift 1 20))))
@@ -77,7 +78,7 @@
  (: valid-opcode? (fixnum --> boolean))
  (: control-opcode? (fixnum --> boolean))
  (: data-opcode? (fixnum --> boolean))
- 
+
  (: opcode-connection-close? (fixnum --> boolean))
  (: opcode-continuation? (fixnum --> boolean))
 
@@ -95,7 +96,7 @@
      ('going-away                 #u8(3 233)) ;; 1001
      ('protocol-error             #u8(3 234)) ;; 1002
      ('unsupported-data           #u8(3 235)) ;; 1003
-     ;; 1004 reserved             
+     ;; 1004 reserved
      ('no-status-rcvd             #u8(3 237)) ;; 1005
      ('abnormal-closure           #u8(3 238)) ;; 1006
      ('invalid-frame-payload-data #u8(3 239)) ;; 1007
@@ -113,7 +114,7 @@
      ((1001) 'going-away)
      ((1002) 'protocol-error)
      ((1003) 'unsupported-data)
-					; 1004 reserved             
+					; 1004 reserved
      ((1005) 'no-status-rcvd)
      ((1006) 'abnormal-closure)
      ((1007) 'invalid-frame-payload-data)
@@ -139,7 +140,7 @@
 	  (= 0 (utf8d data (- len 2) 2 0))))
     ((= 0 len) #t)
     (else #f)))
- 
+
  ;; websocket frame record
 
  (: make-ws-frame (boolean fixnum fixnum boolean integer u8vector --> (struct ws-frame)))
@@ -166,7 +167,7 @@
 
  (define (frame-optype f)
    (opcode->optype (frame-opcode f)))
- 
+
  (define-record-printer (ws-frame f out)
    (fprintf out "#<ws-frame fin=~A rsv~A op=~A mask=~A payload=~A (~A)>"
 	    (frame-fin f) (frame-rsv f) (frame-optype f) (frame-mask? f)
@@ -195,7 +196,7 @@
 
  (define (message-size m)
    (u8vector-length (message-data* m)))
- 
+
  (define-record-printer (ws-message m out)
    (fprintf out "#<ws-message type=~A data=~A>"
 	    (message-type m)
@@ -233,9 +234,9 @@
    (let ((len (buffer-length conn)))
      (buffer-length-set! conn 0)
      (subu8vector (buffer-data conn) 0 len)))
- 
 
- 
+
+
  ;; websocket uri validation
 
  (: ws-uri (string --> (struct uri-common)))
@@ -252,6 +253,67 @@
 
  ;; websocket opening handshake
 
+ (: send-client-opening-handshake (input-port (struct uri-common) string -> output-port))
+ (define (send-client-opening-handshake o wsuri key)
+   (let* ((host (uri-host wsuri))
+	  (port (uri-port wsuri))
+	  (req (make-request
+		uri: wsuri
+		port: o
+		headers: (headers
+			  `((host (,host . ,port))
+			    (upgrade #("websocket" raw))
+			    (connection #("upgrade" raw))
+			    (sec-websocket-key #(,key raw))
+			    (sec-websocket-version #("13" raw)))))))
+     ;; apparently write-request might modify out-port, so we
+     ;; return this
+     (request-port (write-request req))))
+
+ (: expected-sec-websocket-accept (string --> string))
+ (define (expected-sec-websocket-accept key)
+   (let* ((s (string->sha1sum (string-append key "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))))
+     ;; convert the string representation of the SHA1 hash into a
+     ;; string of the actual bytes
+     ((foreign-lambda* void ((blob s))
+		       "
+unsigned char *ha = s;
+unsigned char *hb = ha;
+for (size_t i = 0; i < 20; ++i) {
+  *ha = 16*(*hb - ('a' <= *hb ? 87 : 48)); ++hb;
+  *ha += *hb - ('a' <= *hb ? 87 : 48); ++hb;
+  ++ha;
+}
+") s)
+     ;; base64-encode the bytestring
+     (base64-encode (substring s 0 20))))
+
+ (: read-server-opening-handshake (input-port string -> *))
+ (define (read-server-opening-handshake i key)
+   (let* ((res (read-response i))
+	  (h (response-headers res)))
+     (case (response-code res)
+       ((101)
+	;; validate server handshake
+	(if (not (and
+		  ;; connection: upgrade
+		  (eq? 'upgrade (header-value 'connection h))
+		  ;; upgrade: websocket
+		  (header-value 'upgrade h)
+		  (string-ci=? "websocket" (car(header-value 'upgrade h)))
+		  ;; sec-websocket-accept: (base64 (SHA1 (key + magic)))
+		  (string=? (expected-sec-websocket-accept key)
+			    (header-value 'sec-websocket-accept h))))
+	    (ws-fail 'protocol-error "invalid upgrade headers"))
+	#t)
+       ;; for responses other than 101, do nothing except report it to
+       ;; the user.
+       (else (ws-error 'ws-connect
+		       (sprintf "opening handshake unsuccessful: ~A ~A"
+				(response-code res) (response-reason res)))))))
+
+
+
  (: ws-connect (string -> (struct ws-connection)))
  (define (ws-connect uri)
    (let*-values
@@ -264,27 +326,9 @@
 	 (if (eq? 'wss (uri-scheme wsuri))
 	     (ssl-connect* hostname: host port: port)
 	     (tcp-connect host port)))
-	((req) (make-request
-		uri: wsuri
-		port: o
-		headers: (headers
-			  `((host (,host . ,port))
-			    (upgrade #("websocket" raw))
-			    (connection #("upgrade" raw))
-			    (sec-websocket-key #(,key raw))
-			    (sec-websocket-version #("13" raw))))))
-	;; apparently write-request might modify out-port
-	((o*) (request-port (write-request req)))
-	((res) (read-response i)))
-     ;; we do not do anything about response codes that are not
-     ;; 101 except for report it to the caller. For example, 3xx
-     ;; redirects are not handled automatically.
-     (case (response-code res)
-       ((101) (make-ws-connection i o*))
-       ;; TODO: validate response
-       (else  (ws-error 'ws-connect
-			(sprintf "opening handshake unsuccessful: ~A ~A"
-				 (response-code res) (response-reason res)))))))
+	((o*) (send-client-opening-handshake o wsuri key)))
+     (if (read-server-opening-handshake i key) (make-ws-connection i o*))))
+
 
  ;; send a single websocket frame
  (: send-frame ((struct ws-connection) symbol u8vector
@@ -341,13 +385,13 @@ C_return(u-u_orig);
  (define (send-message conn type data #!optional (len (u8vector-length data)))
    (send-frame conn type data len))
 
-(define (send-text-message conn data)
+ (define (send-text-message conn data)
    (send-message conn 'text (blob->u8vector/shared (string->blob data))))
 
  (define (send-binary-message conn data)
    (send-message conn 'binary (blob->u8vector/shared data)))
 
- 
+
  ;; read a single websocket frame; raise signal if protocol violated
 
  ;; these are like read-u8vector and read-u8vector!, except the length
@@ -366,7 +410,7 @@ C_return(u-u_orig);
  (define (read-full-u8vector len
 			     #!optional (port (current-input-port)) (start 0))
    (read-full-u8vector! len (make-u8vector len) port start))
- 
+
  (: interpret-b0 (fixnum --> boolean fixnum fixnum))
  (define (interpret-b0 b)
    (if (eof-object? b)
@@ -379,7 +423,7 @@ C_return(u-u_orig);
      (if (not (valid-opcode? op))
 	 (ws-fail 'protocol-error "unsupported opcode"))
      (values fin rsv op)))
- 
+
  (: interpret-b1 (fixnum --> boolean fixnum))
  (define (interpret-b1 b)
    (if (eof-object? b)
@@ -411,8 +455,8 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
      ((127) (read-payload-length* i 8 0))
      ((126) (read-payload-length* i 2 0))
      (else len0)))
- 
- (: read-control-frame ((struct ws-connection) boolean fixnum fixnum boolean integer -> (struct ws-frame))) 
+
+ (: read-control-frame ((struct ws-connection) boolean fixnum fixnum boolean integer -> (struct ws-frame)))
  (define (read-control-frame conn fin rsv op mask len)
    (let ((i (in-port conn)))
      (if (not fin)
@@ -440,15 +484,15 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	 (buffer-length-set! conn (+ start len))
 	 (make-ws-frame fin rsv op mask len
 			(subu8vector buf start (buffer-length conn)))))))
- 
+
  (: recv-frame ((struct ws-connection) -> (struct ws-frame)))
  (define (recv-frame conn)
    (let*-values (((i) (in-port conn))
-  		 ((b0) (read-byte i))
+		 ((b0) (read-byte i))
 		 ((fin rsv op) (interpret-b0 b0))
 		 ((b1) (read-byte i))
 		 ((mask len0) (interpret-b1 b1)))
-     (cond 
+     (cond
       ((control-opcode? op) (read-control-frame conn fin rsv op mask len0))
       (else (read-data-frame conn fin rsv op mask len0)))))
 
@@ -456,7 +500,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
  (define (recv-message-loop conn handler)
    (let ((m (recv-message conn)))
      (if (ws-message? m) (begin
-                           (handler m)
+			   (handler m)
 			   (recv-message-loop conn handler)))))
 
 
@@ -473,16 +517,16 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 
  (define (recv-message* conn type count)
    (let* ((f (recv-frame conn))
-      	  (op (frame-optype f))
+	  (op (frame-optype f))
 	  (data (frame-payload-data f))
 	  (len (frame-payload-length f)))
      ;; (count is a fragments-per-message counter that is currently unused.)
-     
+
      ;; update utf validation state if reading text
      (if (or (eq? 'text op) (and (eq? 'continuation op) (eq? 'text type)))
 	 (begin
 	   (buffer-utf-st8-set! conn (utf8d data len 0 (buffer-utf-st8 conn)))
-           (if (= 1 (buffer-utf-st8 conn))
+	   (if (= 1 (buffer-utf-st8 conn))
 	       (ws-fail 'protocol-error "text message contains invalid utf-8 (2)"))))
      ;; handle continuation & control frames until a complete message
      ;; can be assembled
