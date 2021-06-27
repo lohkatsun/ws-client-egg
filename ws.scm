@@ -17,7 +17,7 @@
      reason->close-code close-code->reason
      ;; valid-close-code?
 
-     ws-frame?
+     ws-frame? data-frame? control-frame?
      frame-fin frame-rsv frame-opcode frame-optype frame-mask?
      frame-payload-length frame-payload-data
 
@@ -150,6 +150,9 @@
  (: frame-payload-length ((struct ws-frame) --> integer))
  (: frame-payload-data ((struct ws-frame) --> u8vector))
 
+ (: data-frame? ((struct ws-frame) --> boolean))
+ (: control-frame? ((struct ws-frame) --> boolean))
+
  (define-record-type ws-frame
    (make-ws-frame fin rsv op mask len data)
    ws-frame?
@@ -170,6 +173,9 @@
 	    (frame-fin f) (frame-rsv f) (frame-optype f) (frame-mask? f)
 	    (if (< 12 (frame-payload-length f)) "..." (frame-payload-data f))
 	    (frame-payload-length f)))
+
+ (define (data-frame? f) (data-opcode? (frame-opcode f)))
+ (define (control-frame? f) (control-opcode? (frame-opcode f)))
 
  ;; websocket message record
  (: make-ws-message (symbol (list-of (struct ws-frame)) --> (struct ws-message)))
@@ -310,8 +316,6 @@ for (size_t i = 0; i < 20; ++i) {
 		       (sprintf "opening handshake unsuccessful: ~A ~A"
 				(response-code res) (response-reason res)))))))
 
-
-
  (: ws-connect (string -> (struct ws-connection)))
  (define (ws-connect uri)
    (let*-values
@@ -327,7 +331,6 @@ for (size_t i = 0; i < 20; ++i) {
 	((o*) (send-client-opening-handshake o wsuri key)))
      (if (read-server-opening-handshake i key)
 	 (make-ws-connection i o* '()))))
-
 
  ;; send a single websocket frame
  (: send-frame ((struct ws-connection) symbol u8vector
@@ -469,7 +472,10 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	    (key (if mask (read-full-u8vector 4 i) #f))
 	    (buf (read-full-u8vector len i))
 	    (f (make-ws-frame fin rsv op mask len buf)))
-       f)))
+       (apply-extension-transforms
+	(extensions conn)
+	in-frame-transform
+	f))))
 
  (: recv-message-loop ((struct ws-connection) ((struct ws-message) -> *) -> undefined))
  (define (recv-message-loop conn handler)
@@ -484,7 +490,11 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 		   -> (or false (struct ws-message))))
  (define (recv-message conn)
    (condition-case
-    (recv-message* conn 'none '() 0)
+    ;; receive (& process, if extensions are present) a single message
+    (let ((m (recv-message* conn 'none '() 0)))
+      (if (ws-message? m)
+	  (apply-extension-transforms (extensions conn) in-message-transform m)
+	  #f))
     (e (websocket fail)
        (print (get-condition-property e 'fail 'message))
        (send-frame conn
@@ -492,7 +502,6 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 		   (reason->close-code (get-condition-property e 'fail 'reason))))))
 
  (define (recv-message* conn type frames utf-st8)
-   ;; (define (recv-message* conn type count)
    (let* ((f (recv-frame conn))
 	  (op (frame-optype f))
 	  (data (frame-payload-data f))
@@ -502,7 +511,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	       (utf8d data len 0 utf-st8) utf-st8)))
      (if (= 1 utf-upd8)
 	 (ws-fail 'protocol-error "text message contains invalid utf-8 (2)"))
-     ;; handle continuation & control frames until a complete message
+     ;; consume continuation & control frames until a complete message
      ;; can be assembled
      (case op
        ;; text/bianry
