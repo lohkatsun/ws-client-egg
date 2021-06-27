@@ -11,7 +11,7 @@
      ;; low-level interface:
 
      opcode->optype optype->opcode
-     ;; valid->opcode? control->opcode? data-opcode?
+     ;; base-protocol-opcode? control-opcode? data-opcode?
      ;; opcode-connection-close? opcode->continuation?
 
      reason->close-code close-code->reason
@@ -30,10 +30,7 @@
 	 srfi-4 openssl uri-common intarweb base64 simple-sha1)
 
  (include "ws-utf8")
-
- ;; parameters
-
- (define max-message-size (make-parameter (* 24 (arithmetic-shift 1 20))))
+ (include "ws-permessage-deflate")
 
  ;; error handling
 
@@ -75,14 +72,14 @@
      ('pong             #xa)
      (else (ws-exn "unrecognised optype"))))
 
- (: valid-opcode? (fixnum --> boolean))
+ (: base-protocol-opcode? (fixnum --> boolean))
  (: control-opcode? (fixnum --> boolean))
  (: data-opcode? (fixnum --> boolean))
 
  (: opcode-connection-close? (fixnum --> boolean))
  (: opcode-continuation? (fixnum --> boolean))
 
- (define (valid-opcode? o) (case o ((#x0 #x1 #x2 #x8 #x9 #xa) #t) (else #f)))
+ (define (base-protocol-opcode? o) (case o ((#x0 #x1 #x2 #x8 #x9 #xa) #t) (else #f)))
  (define (control-opcode? o) (and (< 7 o) (< o 16)))
  (define (data-opcode? o) (and (<= 0 o) (< o 8)))
 
@@ -175,18 +172,38 @@
 	    (frame-payload-length f)))
 
  ;; websocket message record
- (: make-ws-message (symbol u8vector --> (struct ws-message)))
+ (: make-ws-message (symbol (list-of (struct ws-frame)) --> (struct ws-message)))
+ (: make-ws-message* (symbol (list-of (struct ws-frame)) u8vector --> (struct ws-message)))
  (: ws-message? (* --> boolean))
  (: message-type ((struct ws-message) --> symbol))
+ (: message-frames ((struct ws-message) --> (list-of (struct ws-frame))))
  (: message-data* ((struct ws-message) --> u8vector))
  (: message-data ((struct ws-message) --> (or string blob)))
  (: message-size ((struct ws-message) --> integer))
 
  (define-record-type ws-message
-   (make-ws-message type data)
+   (make-ws-message* type frames data)
    ws-message?
    (type message-type)
+   (frames message-frames)
    (data message-data*))
+
+ (: conc-frame-payloads (u8vector integer (list-of (struct ws-frame)) -> undefined))
+ (define (conc-frame-payloads buf start frames)
+   (if (not (eq? '() frames))
+       (let* ((f (car frames))
+	      (len (frame-payload-length f)))
+	 ;; this should be u8vector-copy!, but srfi-66 seems to be broken
+	 ((foreign-lambda* void ((u8vector trg) (u8vector src) (size_t start) (size_t len))
+			   "memcpy(trg+start, src, len);") buf (frame-payload-data f) start len)
+					;	 (u8vector-copy! (frame-payload-data f) buf start len)
+	 (conc-frame-payloads buf (+ start len) (cdr frames)))))
+
+ (define (make-ws-message type frames)
+   (let* ((len (foldl (lambda (a f) (+ a (frame-payload-length f))) 0 frames))
+	  (buf (make-u8vector len 0)))
+     (conc-frame-payloads buf 0 frames)
+     (make-ws-message* type frames buf)))
 
  (define (message-data m)
    (case (message-type m)
@@ -204,38 +221,19 @@
 
  ;; websocket connection record
 
- (: make-ws-connection (input-port output-port --> (struct ws-connection)))
- (: make-ws-connection* (input-port output-port u8vector integer fixnum --> (struct ws-connection)))
+ (: make-ws-connection (input-port output-port (list-of (struct ws-extension))
+				   --> (struct ws-connection)))
  (: ws-connection? (* --> boolean))
  (: in-port ((struct ws-connection) --> input-port))
  (: out-port ((struct ws-connection) --> output-port))
- (: buffer-data ((struct ws-connection) --> u8vector))
- (: buffer-length ((struct ws-connection) --> integer))
- (: buffer-length-set! ((struct ws-connection) integer -> undefined))
- (: buffer-utf-st8 ((struct ws-connection) --> fixnum))
- (: buffer-utf-st8-set! ((struct ws-connection) fixnum -> undefined))
-
- (define (make-ws-connection i o)
-   (make-ws-connection* i o (make-u8vector (max-message-size) 0) 0 0))
+ (: extensions ((struct ws-connection) --> (list-of (struct ws-extension))))
 
  (define-record-type ws-connection
-   (make-ws-connection* i o buf buf-len utf-st8)
+   (make-ws-connection i o exts)
    ws-connection?
    (i in-port)
    (o out-port)
-   (buf buffer-data)
-   (buf-len buffer-length buffer-length-set!)
-   (utf-st8 buffer-utf-st8 buffer-utf-st8-set!))
-
- (: extract-buffered-data! ((struct ws-connection) boolean -> u8vector))
- (define (extract-buffered-data! conn utf8)
-   (if (and utf8 (< 0 (buffer-utf-st8 conn)))
-       (ws-fail 'protocol-error "text message contains invalid utf-8"))
-   (let ((len (buffer-length conn)))
-     (buffer-length-set! conn 0)
-     (subu8vector (buffer-data conn) 0 len)))
-
-
+   (exts extensions))
 
  ;; websocket uri validation
 
@@ -297,7 +295,7 @@ for (size_t i = 0; i < 20; ++i) {
 	;; validate server handshake
 	(if (not (and
 		  ;; connection: upgrade
-		  (memq? 'upgrade (header-values 'connection h))
+		  (memq 'upgrade (header-values 'connection h))
 		  ;; upgrade: websocket
 		  (header-value 'upgrade h)
 		  (string-ci=? "websocket" (car(header-value 'upgrade h)))
@@ -327,7 +325,8 @@ for (size_t i = 0; i < 20; ++i) {
 	     (ssl-connect* hostname: host port: port)
 	     (tcp-connect host port)))
 	((o*) (send-client-opening-handshake o wsuri key)))
-     (if (read-server-opening-handshake i key) (make-ws-connection i o*))))
+     (if (read-server-opening-handshake i key)
+	 (make-ws-connection i o* '()))))
 
 
  ;; send a single websocket frame
@@ -391,9 +390,6 @@ C_return(u-u_orig);
  (define (send-binary-message conn data)
    (send-message conn 'binary (blob->u8vector/shared data)))
 
-
- ;; read a single websocket frame; raise signal if protocol violated
-
  ;; these are like read-u8vector and read-u8vector!, except the length
  ;; option is not optional and they throw an exception when the hit an
  ;; eof earlier than expected.
@@ -420,7 +416,7 @@ C_return(u-u_orig);
 	  (op  (bitwise-and b 15)))
      (if (< 0 rsv)
 	 (ws-fail 'protocol-error "unsupported RSV bits"))
-     (if (not (valid-opcode? op))
+     (if (not (base-protocol-opcode? op))
 	 (ws-fail 'protocol-error "unsupported opcode"))
      (values fin rsv op)))
 
@@ -456,45 +452,24 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
      ((126) (read-payload-length* i 2 0))
      (else len0)))
 
- (: read-control-frame ((struct ws-connection) boolean fixnum fixnum boolean integer -> (struct ws-frame)))
- (define (read-control-frame conn fin rsv op mask len)
-   (let ((i (in-port conn)))
-     (if (not fin)
-	 (ws-fail 'protocol-error "fragmented control frame"))
-     (if (< 125 len)
-	 (ws-fail 'protocol-error "control frame with payload length > 125"))
-     (let* ((key (if mask (read-full-u8vector 4 i) #f))
-	    (buf (read-full-u8vector len i)))
-       (if mask (mask-buffer! len buf 0 key))
-       ;; TODO: checking for close frames
-       (make-ws-frame fin rsv op mask len buf))))
-
- (: read-data-frame ((struct ws-connection) boolean fixnum fixnum boolean integer -> (struct ws-frame)))
- (define (read-data-frame conn fin rsv op mask len0)
-   (let ((i (in-port conn)))
-     (let* ((len (read-payload-length i len0))
-	    (buf (buffer-data conn))
-	    (start (if (opcode-continuation? op) (buffer-length conn) 0)))
-       ;; TODO : dynamically resize instead of allocating max size at beginning?
-       (if (> (+ start len) (max-message-size))
-	   (ws-fail 'message-too-big "message too big"))
-       (let ((key (if mask (read-full-u8vector 4 i) #f))
-	     (buf (read-full-u8vector! len buf i start)))
-	 (if mask (mask-buffer! len buf start key))
-	 (buffer-length-set! conn (+ start len))
-	 (make-ws-frame fin rsv op mask len
-			(subu8vector buf start (buffer-length conn)))))))
-
+ ;; read a single websocket frame; raise signal if protocol violated
  (: recv-frame ((struct ws-connection) -> (struct ws-frame)))
  (define (recv-frame conn)
-   (let*-values (((i) (in-port conn))
-		 ((b0) (read-byte i))
-		 ((fin rsv op) (interpret-b0 b0))
-		 ((b1) (read-byte i))
-		 ((mask len0) (interpret-b1 b1)))
-     (cond
-      ((control-opcode? op) (read-control-frame conn fin rsv op mask len0))
-      (else (read-data-frame conn fin rsv op mask len0)))))
+   (let*-values
+       (((i) (in-port conn))
+	((b0) (read-byte i))
+	((fin rsv op) (interpret-b0 b0))
+	((b1) (read-byte i))
+	((mask len0) (interpret-b1 b1)))
+     (if (control-opcode? op)
+	 (cond
+	  ((not fin) (ws-fail 'protocol-error "fragmented control frame"))
+	  ((< 125 len0) (ws-fail 'protocol-error "control frame with payload length > 125"))))
+     (let* ((len (read-payload-length i len0))
+	    (key (if mask (read-full-u8vector 4 i) #f))
+	    (buf (read-full-u8vector len i))
+	    (f (make-ws-frame fin rsv op mask len buf)))
+       f)))
 
  (: recv-message-loop ((struct ws-connection) ((struct ws-message) -> *) -> undefined))
  (define (recv-message-loop conn handler)
@@ -505,29 +480,28 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 
 
  (: recv-message ((struct ws-connection) -> (or false (struct ws-message))))
- (: recv-message* ((struct ws-connection) symbol integer -> (or false (struct ws-message))))
+ (: recv-message* ((struct ws-connection) symbol (list-of (struct ws-frame)) integer
+		   -> (or false (struct ws-message))))
  (define (recv-message conn)
    (condition-case
-    (recv-message* conn 'none 0)
+    (recv-message* conn 'none '() 0)
     (e (websocket fail)
        (print (get-condition-property e 'fail 'message))
        (send-frame conn
 		   'connection-close
 		   (reason->close-code (get-condition-property e 'fail 'reason))))))
 
- (define (recv-message* conn type count)
+ (define (recv-message* conn type frames utf-st8)
+   ;; (define (recv-message* conn type count)
    (let* ((f (recv-frame conn))
 	  (op (frame-optype f))
 	  (data (frame-payload-data f))
-	  (len (frame-payload-length f)))
-     ;; (count is a fragments-per-message counter that is currently unused.)
-
-     ;; update utf validation state if reading text
-     (if (or (eq? 'text op) (and (eq? 'continuation op) (eq? 'text type)))
-	 (begin
-	   (buffer-utf-st8-set! conn (utf8d data len 0 (buffer-utf-st8 conn)))
-	   (if (= 1 (buffer-utf-st8 conn))
-	       (ws-fail 'protocol-error "text message contains invalid utf-8 (2)"))))
+	  (len (frame-payload-length f))
+	  (utf-upd8
+	   (if (or (eq? 'text op) (and (eq? 'continuation op) (eq? 'text type)))
+	       (utf8d data len 0 utf-st8) utf-st8)))
+     (if (= 1 utf-upd8)
+	 (ws-fail 'protocol-error "text message contains invalid utf-8 (2)"))
      ;; handle continuation & control frames until a complete message
      ;; can be assembled
      (case op
@@ -535,24 +509,29 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
        ((text binary)
 	(cond
 	 ((not (frame-fin f))
-	  (recv-message* conn op (+ count 1)))
+	  ;;(recv-message* conn op (+ count 1)))
+	  (recv-message* conn op (cons f frames) utf-upd8))
 	 ((not (eq? 'none type))
 	  (ws-fail 'protocol-error "fragments out of order"))
+	 ((and (eq? 'text op) (< 0 utf-upd8))
+	  (ws-fail 'protocol-error "text message contains invalid utf-8"))
 	 (else
-	  (make-ws-message op (extract-buffered-data! conn (eq? 'text op))))))
+	  (make-ws-message op (reverse (cons f frames))))))
        ;; continuation
        ((continuation)
 	(cond
 	 ((eq? 'none type) (ws-fail 'protocol-error "nothing to continue"))
 	 ((frame-fin f)
-	  (make-ws-message type (extract-buffered-data! conn (eq? 'text type))))
-	 (else (recv-message* conn type (+ count 1)))))
+	  (if (and (eq? 'text type) (< 0 utf-upd8))
+	      (ws-fail 'protocol-error "text message contains invalid utf-8")
+	      (make-ws-message type (reverse (cons f frames)))))
+	 (else (recv-message* conn type (cons f frames) utf-upd8))))
        ;; ping/pong
        ((ping)
 	(send-frame conn 'pong data len)
-	(recv-message* conn type (+ count 1)))
+	(recv-message* conn type frames utf-upd8))
        ((pong)
-	(recv-message* conn type (+ count 1)))
+	(recv-message* conn type frames utf-upd8))
        ((connection-close)
 	(if (valid-close-frame-payload? data len)
 	    (send-frame conn 'connection-close data len)
