@@ -153,6 +153,8 @@
  (: data-frame? ((struct ws-frame) --> boolean))
  (: control-frame? ((struct ws-frame) --> boolean))
 
+ (: make-close-frame (symbol --> (struct ws-frame)))
+
  (define-record-type ws-frame
    (make-ws-frame fin rsv op mask len data)
    ws-frame?
@@ -177,12 +179,17 @@
  (define (data-frame? f) (data-opcode? (frame-opcode f)))
  (define (control-frame? f) (control-opcode? (frame-opcode f)))
 
+ (define (make-close-frame reason)
+   (make-ws-frame #t 0 (optype->opcode 'connection-close) #t
+		  2 (reason->close-code reason)))
+
  ;; websocket message record
  (: make-ws-message (symbol (list-of (struct ws-frame)) --> (struct ws-message)))
  (: make-ws-message* (symbol (list-of (struct ws-frame)) u8vector --> (struct ws-message)))
  (: ws-message? (* --> boolean))
  (: message-type ((struct ws-message) --> symbol))
  (: message-frames ((struct ws-message) --> (list-of (struct ws-frame))))
+ (: message-frames-set! ((struct ws-message) (list-of (struct ws-frame)) -> *))
  (: message-data* ((struct ws-message) --> u8vector))
  (: message-data ((struct ws-message) --> (or string blob)))
  (: message-size ((struct ws-message) --> integer))
@@ -191,7 +198,7 @@
    (make-ws-message* type frames data)
    ws-message?
    (type message-type)
-   (frames message-frames)
+   (frames message-frames message-frames-set!)
    (data message-data*))
 
  (: conc-frame-payloads (u8vector integer (list-of (struct ws-frame)) -> undefined))
@@ -202,7 +209,6 @@
 	 ;; this should be u8vector-copy!, but srfi-66 seems to be broken
 	 ((foreign-lambda* void ((u8vector trg) (u8vector src) (size_t start) (size_t len))
 			   "memcpy(trg+start, src, len);") buf (frame-payload-data f) start len)
-					;	 (u8vector-copy! (frame-payload-data f) buf start len)
 	 (conc-frame-payloads buf (+ start len) (cdr frames)))))
 
  (define (make-ws-message type frames)
@@ -332,11 +338,22 @@ for (size_t i = 0; i < 20; ++i) {
      (if (read-server-opening-handshake i key)
 	 (make-ws-connection i o* '()))))
 
- ;; send a single websocket frame
- (: send-frame ((struct ws-connection) symbol u8vector
-		#!optional integer boolean boolean fixnum -> undefined))
- (define (send-frame conn op data
-		     #!optional (len (u8vector-length data)) (mask #t) (fin #t) (rsv 0))
+ ;; (: send-frame ((struct ws-connection) symbol u8vector
+ ;;		#!optional integer boolean boolean fixnum -> undefined))
+ ;; (define (send-frame conn op data
+ ;;		     #!optional (len (u8vector-length data)) (mask #t) (fin #t) (rsv 0))
+ (: send-frame ((struct ws-connection) (struct ws-frame) -> undefined))
+ (define (send-frame conn frame)
+   (let ((f (apply-extension-transforms
+	     (extensions conn)
+	     out-frame-transform frame)))
+     (send-frame* conn (frame-opcode f) (frame-payload-data f) (frame-payload-length f)
+		  (frame-mask? f) (frame-fin f) (frame-rsv f))))
+
+ ;; note that send-frame* takes an opcode rather than an optype
+ (: send-frame* ((struct ws-connection) fixnum u8vector
+		 integer boolean boolean fixnum -> undefined))
+ (define (send-frame* conn op data len mask fin rsv)
    (let* ((buf (make-u8vector (+ 14 len) 0))
 	  (size ((foreign-lambda* size_t ((u8vector u)
 					  (byte op) (u8vector data) (unsigned-integer64 len)
@@ -373,19 +390,29 @@ if (mask) {
 C_return(u-u_orig);
 "
 				  )
-		 buf (optype->opcode op) data len mask
-		 fin rsv (blob->u8vector/shared (random-bytes (make-blob 4))))))
+		 buf op data len mask fin rsv (blob->u8vector/shared (random-bytes (make-blob 4))))))
      (write-u8vector buf (out-port conn) 0 size)))
 
- ;; (these are just different shorthands for send-frame until
- ;; fragmenting outgoing messages if implemented:)
-
+ (: fragment ((struct ws-message) -> (list-of (struct ws-frame))))
  (: send-message ((struct ws-connection) symbol u8vector #!optional integer --> undefined))
  (: send-text-message ((struct ws-connection) string -> undefined))
  (: send-binary-message ((struct ws-connection) blob -> undefined))
 
- (define (send-message conn type data #!optional (len (u8vector-length data)))
-   (send-frame conn type data len))
+ ;; TODO: fragment long messages?
+ (define (fragment msg)
+   (let ((lf (list (make-ws-frame
+		    #t 0 (optype->opcode (message-type msg)) #t
+		    (message-size msg) (message-data* msg)))))
+     (message-frames-set! msg lf) lf))
+
+ (define (send-message conn type data)
+   ;;   (if (eq? '() (extensions conn))
+   ;;       (send-frame* conn (optype->opcode type) data (u8vector-length data) #t #t 0)
+   (let ((m (apply-extension-transforms
+	     (extensions conn)
+	     out-message-transform
+	     (make-ws-message* type '() data))))
+     (foldl (lambda (a f) (send-frame conn f)) #f (fragment m))))
 
  (define (send-text-message conn data)
    (send-message conn 'text (blob->u8vector/shared (string->blob data))))
@@ -497,9 +524,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	  #f))
     (e (websocket fail)
        (print (get-condition-property e 'fail 'message))
-       (send-frame conn
-		   'connection-close
-		   (reason->close-code (get-condition-property e 'fail 'reason))))))
+       (send-frame conn (make-close-frame (get-condition-property e 'fail 'reason))))))
 
  (define (recv-message* conn type frames utf-st8)
    (let* ((f (recv-frame conn))
@@ -518,7 +543,6 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
        ((text binary)
 	(cond
 	 ((not (frame-fin f))
-	  ;;(recv-message* conn op (+ count 1)))
 	  (recv-message* conn op (cons f frames) utf-upd8))
 	 ((not (eq? 'none type))
 	  (ws-fail 'protocol-error "fragments out of order"))
@@ -537,12 +561,12 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	 (else (recv-message* conn type (cons f frames) utf-upd8))))
        ;; ping/pong
        ((ping)
-	(send-frame conn 'pong data len)
+	(send-frame conn (make-ws-frame #t 0 (optype->opcode 'pong) #t len data))
 	(recv-message* conn type frames utf-upd8))
        ((pong)
 	(recv-message* conn type frames utf-upd8))
        ((connection-close)
 	(if (valid-close-frame-payload? data len)
-	    (send-frame conn 'connection-close data len)
+	    (send-frame conn (make-close-frame 'normal-closure))
 	    (ws-fail 'protocol-error "invalid close frame payload"))))))
  )

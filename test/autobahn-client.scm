@@ -17,7 +17,7 @@
 	  (recv-message-loop
 	   c
 	   (lambda (m)
-	     (send-frame c (message-type m) (message-data* m) (message-size m)))))
+	     (send-message c (message-type m) (message-data* m)))))
 	(run-case (+ n 1) total))))
 
 (define (update-report)

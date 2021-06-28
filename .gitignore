@@ -4,3 +4,4 @@
 *.link
 *.o
 *.so
+PROFILE.*
