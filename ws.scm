@@ -2,6 +2,8 @@
  ws (ws-connect
      ws-connection?
 
+     ws-close
+
      recv-message recv-message-loop
      send-message send-text-message send-binary-message
 
@@ -156,7 +158,7 @@
  (: data-frame? (ws-frame --> boolean))
  (: control-frame? (ws-frame --> boolean))
 
- (: make-close-frame (symbol --> ws-frame))
+ ;;(: make-close-frame (symbol --> ws-frame))
 
  (define-record-type ws-frame
    (make-ws-frame fin rsv op mask len data)
@@ -182,9 +184,9 @@
  (define (data-frame? f) (data-opcode? (frame-opcode f)))
  (define (control-frame? f) (control-opcode? (frame-opcode f)))
 
- (define (make-close-frame reason)
-   (make-ws-frame #t 0 (optype->opcode 'connection-close) #t
-		  2 (reason->close-code reason)))
+ ;; (define (make-close-frame reason)
+ ;;   (make-ws-frame #t 0 (optype->opcode 'connection-close) #t
+ ;;		  2 (reason->close-code reason)))
 
  ;; websocket message record
  (define-type ws-message (struct ws-message))
@@ -337,13 +339,15 @@ for (size_t i = 0; i < 20; ++i) {
 	     (ssl-connect* hostname: host port: port)
 	     (tcp-connect host port)))
 	((o*) (send-client-opening-handshake o wsuri key)))
+     ;; TODO: negotiate connections
      (if (read-server-opening-handshake i key)
-	 (make-ws-connection i o* '()))))
+	 ;; (do-nothing is an extension that does nothing, for testing
+	 ;; purposes & to be replaced later once negotiation is
+	 ;; implemented.)
+	 (let ((conn (make-ws-connection i o* (list do-nothing))))
+	   (for-each (lambda (e) ((extension-init e) conn)) (extensions conn))
+	   conn))))
 
- ;; (: send-frame (ws-connection symbol u8vector
- ;;		#!optional integer boolean boolean fixnum -> undefined))
- ;; (define (send-frame conn op data
- ;;		     #!optional (len (u8vector-length data)) (mask #t) (fin #t) (rsv 0))
  (: send-frame (ws-connection ws-frame -> undefined))
  (define (send-frame conn frame)
    (let ((f (apply-extension-transforms
@@ -414,7 +418,7 @@ C_return(u-u_orig);
 	     (extensions conn)
 	     out-message-transform
 	     (make-ws-message* type '() data))))
-     (foldl (lambda (a f) (send-frame conn f)) #f (fragment m))))
+     (for-each (lambda (f) (send-frame conn f)) (fragment m))))
 
  (define (send-text-message conn data)
    (send-message conn 'text (blob->u8vector/shared (string->blob data))))
@@ -446,8 +450,8 @@ C_return(u-u_orig);
    (let* ((fin (< 0 (bitwise-and b 128)))
 	  (rsv (arithmetic-shift (bitwise-and b 112) -4))
 	  (op  (bitwise-and b 15)))
-     (if (< 0 rsv)
-	 (ws-fail 'protocol-error "unsupported RSV bits"))
+     (if (not (memq rsv '(0)))
+	 (ws-fail 'protocol-error (sprintf "unsupported RSV bits (~A)\n" rsv)))
      (if (not (base-protocol-opcode? op))
 	 (ws-fail 'protocol-error "unsupported opcode"))
      (values fin rsv op)))
@@ -530,7 +534,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	  #f))
     (e (websocket fail)
        (print (get-condition-property e 'fail 'message))
-       (send-frame conn (make-close-frame (get-condition-property e 'fail 'reason))))))
+       (ws-close conn (get-condition-property e 'fail 'reason)))))
 
  (define (recv-message* conn type frames)
    (let* ((f (recv-frame conn))
@@ -563,6 +567,17 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	(recv-message* conn type frames))
        ((connection-close)
 	(if (valid-close-frame-payload? data len)
-	    (send-frame conn (make-close-frame 'normal-closure))
+	    (ws-close conn 'normal-closure)
 	    (ws-fail 'protocol-error "invalid close frame payload"))))))
+
+ (: ws-close (ws-connection symbol -> undefined))
+ (define (ws-close conn reason)
+   ;; send close frame
+   (send-frame
+    conn
+    (make-ws-frame #t 0 (optype->opcode 'connection-close) #t
+		   2 (reason->close-code reason)))
+   ;; tidy up extensions
+   (for-each (lambda (e) ((extension-exit e) conn)) (extensions conn)))
+
  )

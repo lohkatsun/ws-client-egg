@@ -1,10 +1,10 @@
 ;; websocket extension record
 (define-type ws-extension (struct ws-extension))
 (define-record-type ws-extension
-  (make-ws-extension ift oft imt omt op rsv)
+  (make-ws-extension i e ift oft imt omt)
   ws-extension?
-  (op extension-opcodes)
-  (rsv extension-rsv)
+  (i extension-init)
+  (e extension-exit)
   (ift in-frame-transform)
   (oft out-frame-transform)
   (imt in-message-transform)
@@ -21,6 +21,8 @@
 ;; message with 'e'
 (define twiddle
   (make-ws-extension
+   (lambda (conn) (print "twiddle init."))
+   (lambda (conn) (print "twiddle exit."))
    (lambda (f) (if (and (data-frame? f) (< 0 (frame-payload-length f)))
 		   (u8vector-set! (frame-payload-data f) 0 #x41))
 	   f)
@@ -29,4 +31,11 @@
 		      (l (u8vector-length d)))
 		 (if (< 0 l) (u8vector-set! d (- l 1) #x65)))
 	   m)
-   identity #f #f))
+   identity))
+
+;; what it says on the tin
+(define do-nothing
+  (make-ws-extension
+   (lambda (conn) '())
+   (lambda (conn) '())
+   identity identity identity identity))
