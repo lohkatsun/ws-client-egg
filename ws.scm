@@ -133,8 +133,10 @@
  (define (valid-close-frame-payload? data #!optional (len (u8vector-length data)))
    (cond
     ((< 1 len)
-     (and (valid-close-code? data)
-	  (= 0 (utf8d data (- len 2) 2 0))))
+     ;; TODO: utf-8 validation here happens before any extensions
+     ;; might process a close frame. PMCEs operate only on data frames
+     ;; so this is okay now, but may be a source of problems later.
+     (and (valid-close-code? data) (utf-valid8 data (- len 2) 2)))
     ((= 0 len) #t)
     (else #f)))
 
@@ -269,18 +271,16 @@
  (define (send-client-opening-handshake o wsuri key)
    (let* ((host (uri-host wsuri))
 	  (port (uri-port wsuri))
-	  (req (make-request
-		uri: wsuri
-		port: o
-		headers: (headers
-			  `((host (,host . ,port))
-			    (upgrade #("websocket" raw))
-			    (connection #("upgrade" raw))
-			    (sec-websocket-key #(,key raw))
-			    (sec-websocket-version #("13" raw)))))))
+	  (h (headers
+	      `((host (,host . ,port))
+		(upgrade #("websocket" raw))
+		(connection #("upgrade" raw))
+		(sec-websocket-key #(,key raw))
+		(sec-websocket-version #("13" raw))
+		(sec-websocket-extensions #("permessage-deflate" raw))))))
      ;; apparently write-request might modify out-port, so we
      ;; return this
-     (request-port (write-request req))))
+     (request-port (write-request (make-request  uri: wsuri port: o  headers: h)))))
 
  (: expected-sec-websocket-accept (string --> string))
  (define (expected-sec-websocket-accept key)
@@ -515,29 +515,28 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 
 
  (: recv-message (ws-connection -> (or false ws-message)))
- (: recv-message* (ws-connection symbol (list-of ws-frame) integer
-		   -> (or false ws-message)))
+ (: recv-message* (ws-connection symbol (list-of ws-frame) -> (or false ws-message)))
  (define (recv-message conn)
    (condition-case
     ;; receive (& process, if extensions are present) a single message
-    (let ((m (recv-message* conn 'none '() 0)))
+    (let ((m (recv-message* conn 'none '())))
       (if (ws-message? m)
-	  (apply-extension-transforms (extensions conn) in-message-transform m)
+	  (let ((mt (apply-extension-transforms (extensions conn) in-message-transform m)))
+	    ;; validate text message utf-8
+	    (if (and (eq? 'text (message-type mt))
+		     (not (utf-valid8 (message-data* mt) (message-size mt) 0)))
+		(ws-fail 'protocol-error "text message contains invalid utf-8")
+		mt))
 	  #f))
     (e (websocket fail)
        (print (get-condition-property e 'fail 'message))
        (send-frame conn (make-close-frame (get-condition-property e 'fail 'reason))))))
 
- (define (recv-message* conn type frames utf-st8)
+ (define (recv-message* conn type frames)
    (let* ((f (recv-frame conn))
 	  (op (frame-optype f))
 	  (data (frame-payload-data f))
-	  (len (frame-payload-length f))
-	  (utf-upd8
-	   (if (or (eq? 'text op) (and (eq? 'continuation op) (eq? 'text type)))
-	       (utf8d data len 0 utf-st8) utf-st8)))
-     (if (= 1 utf-upd8)
-	 (ws-fail 'protocol-error "text message contains invalid utf-8 (2)"))
+	  (len (frame-payload-length f)))
      ;; consume continuation & control frames until a complete message
      ;; can be assembled
      (case op
@@ -545,28 +544,23 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
        ((text binary)
 	(cond
 	 ((not (frame-fin f))
-	  (recv-message* conn op (cons f frames) utf-upd8))
+	  (recv-message* conn op (cons f frames)))
 	 ((not (eq? 'none type))
 	  (ws-fail 'protocol-error "fragments out of order"))
-	 ((and (eq? 'text op) (< 0 utf-upd8))
-	  (ws-fail 'protocol-error "text message contains invalid utf-8"))
 	 (else
 	  (make-ws-message op (reverse (cons f frames))))))
        ;; continuation
        ((continuation)
 	(cond
 	 ((eq? 'none type) (ws-fail 'protocol-error "nothing to continue"))
-	 ((frame-fin f)
-	  (if (and (eq? 'text type) (< 0 utf-upd8))
-	      (ws-fail 'protocol-error "text message contains invalid utf-8")
-	      (make-ws-message type (reverse (cons f frames)))))
-	 (else (recv-message* conn type (cons f frames) utf-upd8))))
+	 ((frame-fin f)    (make-ws-message type (reverse (cons f frames))))
+	 (else (recv-message* conn type (cons f frames)))))
        ;; ping/pong
        ((ping)
 	(send-frame conn (make-ws-frame #t 0 (optype->opcode 'pong) #t len data))
-	(recv-message* conn type frames utf-upd8))
+	(recv-message* conn type frames))
        ((pong)
-	(recv-message* conn type frames utf-upd8))
+	(recv-message* conn type frames))
        ((connection-close)
 	(if (valid-close-frame-payload? data len)
 	    (send-frame conn (make-close-frame 'normal-closure))

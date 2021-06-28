@@ -4,7 +4,7 @@
 ;; see http://bjoern.hoehrmann.de/utf-8/decoder/dfa/
 
 (: utf8d (u8vector integer integer fixnum --> integer))
-(define (utf8d buf #!optional (len (u8vector-length buf)) (start 0) (state 0))
+(define (utf8d buf len start state)
   ((foreign-lambda* int32 ((u8vector buf) (size_t len) (size_t start) (int32 st))
 		    "
 static const uint8_t utf8d[] = {
@@ -42,3 +42,7 @@ for (size_t i = 0; i < len; ++i) {
 C_return(state);
 "
 		    ) buf len start state))
+
+(: utf-valid8 (u8vector integer integer --> boolean))
+(define (utf-valid8 buf len start)
+  (= 0 (utf8d buf len start 0)))
