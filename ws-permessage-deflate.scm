@@ -1,5 +1,5 @@
 ;; websocket extension record
-
+(define-type ws-extension (struct ws-extension))
 (define-record-type ws-extension
   (make-ws-extension ift oft imt omt op rsv)
   ws-extension?
@@ -11,9 +11,8 @@
   (omt out-message-transform))
 
 
-(: apply-extension-transforms ((list-of (struct ws-extension))
-			       ((struct ws-extension) -> (* -> *))
-			       * -> *))
+(: apply-extension-transforms ((list-of ws-extension)
+			       (ws-extension -> (* -> *)) * -> *))
 (define (apply-extension-transforms exts t frame)
   (foldl (lambda (f e) ((t e) f)) frame exts))
 

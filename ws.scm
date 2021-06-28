@@ -140,20 +140,21 @@
 
  ;; websocket frame record
 
- (: make-ws-frame (boolean fixnum fixnum boolean integer u8vector --> (struct ws-frame)))
+ (define-type ws-frame (struct ws-frame))
+ (: make-ws-frame (boolean fixnum fixnum boolean integer u8vector --> ws-frame))
  (: ws-frame? (* --> boolean))
- (: frame-fin ((struct ws-frame) --> boolean))
- (: frame-rsv ((struct ws-frame) --> fixnum))
- (: frame-opcode ((struct ws-frame) --> fixnum))
- (: frame-optype ((struct ws-frame) --> symbol))
- (: frame-mask? ((struct ws-frame) --> boolean))
- (: frame-payload-length ((struct ws-frame) --> integer))
- (: frame-payload-data ((struct ws-frame) --> u8vector))
+ (: frame-fin (ws-frame --> boolean))
+ (: frame-rsv (ws-frame --> fixnum))
+ (: frame-opcode (ws-frame --> fixnum))
+ (: frame-optype (ws-frame --> symbol))
+ (: frame-mask? (ws-frame --> boolean))
+ (: frame-payload-length (ws-frame --> integer))
+ (: frame-payload-data (ws-frame --> u8vector))
 
- (: data-frame? ((struct ws-frame) --> boolean))
- (: control-frame? ((struct ws-frame) --> boolean))
+ (: data-frame? (ws-frame --> boolean))
+ (: control-frame? (ws-frame --> boolean))
 
- (: make-close-frame (symbol --> (struct ws-frame)))
+ (: make-close-frame (symbol --> ws-frame))
 
  (define-record-type ws-frame
    (make-ws-frame fin rsv op mask len data)
@@ -184,15 +185,16 @@
 		  2 (reason->close-code reason)))
 
  ;; websocket message record
- (: make-ws-message (symbol (list-of (struct ws-frame)) --> (struct ws-message)))
- (: make-ws-message* (symbol (list-of (struct ws-frame)) u8vector --> (struct ws-message)))
+ (define-type ws-message (struct ws-message))
+ (: make-ws-message (symbol (list-of ws-frame) --> ws-message))
+ (: make-ws-message* (symbol (list-of ws-frame) u8vector --> ws-message))
  (: ws-message? (* --> boolean))
- (: message-type ((struct ws-message) --> symbol))
- (: message-frames ((struct ws-message) --> (list-of (struct ws-frame))))
- (: message-frames-set! ((struct ws-message) (list-of (struct ws-frame)) -> *))
- (: message-data* ((struct ws-message) --> u8vector))
- (: message-data ((struct ws-message) --> (or string blob)))
- (: message-size ((struct ws-message) --> integer))
+ (: message-type (ws-message --> symbol))
+ (: message-frames (ws-message --> (list-of ws-frame)))
+ (: message-frames-set! (ws-message (list-of ws-frame) -> *))
+ (: message-data* (ws-message --> u8vector))
+ (: message-data (ws-message --> (or string blob)))
+ (: message-size (ws-message --> integer))
 
  (define-record-type ws-message
    (make-ws-message* type frames data)
@@ -201,7 +203,7 @@
    (frames message-frames message-frames-set!)
    (data message-data*))
 
- (: conc-frame-payloads (u8vector integer (list-of (struct ws-frame)) -> undefined))
+ (: conc-frame-payloads (u8vector integer (list-of ws-frame) -> undefined))
  (define (conc-frame-payloads buf start frames)
    (if (not (eq? '() frames))
        (let* ((f (car frames))
@@ -232,13 +234,13 @@
 	    (if (< 12 (message-size m)) "..." (message-data m))))
 
  ;; websocket connection record
-
- (: make-ws-connection (input-port output-port (list-of (struct ws-extension))
-				   --> (struct ws-connection)))
+ (define-type ws-connection (struct ws-connection))
+ (: make-ws-connection (input-port output-port (list-of ws-extension)
+				   --> ws-connection))
  (: ws-connection? (* --> boolean))
- (: in-port ((struct ws-connection) --> input-port))
- (: out-port ((struct ws-connection) --> output-port))
- (: extensions ((struct ws-connection) --> (list-of (struct ws-extension))))
+ (: in-port (ws-connection --> input-port))
+ (: out-port (ws-connection --> output-port))
+ (: extensions (ws-connection --> (list-of ws-extension)))
 
  (define-record-type ws-connection
    (make-ws-connection i o exts)
@@ -322,7 +324,7 @@ for (size_t i = 0; i < 20; ++i) {
 		       (sprintf "opening handshake unsuccessful: ~A ~A"
 				(response-code res) (response-reason res)))))))
 
- (: ws-connect (string -> (struct ws-connection)))
+ (: ws-connect (string -> ws-connection))
  (define (ws-connect uri)
    (let*-values
        (((wsuri) (ws-uri uri))
@@ -338,11 +340,11 @@ for (size_t i = 0; i < 20; ++i) {
      (if (read-server-opening-handshake i key)
 	 (make-ws-connection i o* '()))))
 
- ;; (: send-frame ((struct ws-connection) symbol u8vector
+ ;; (: send-frame (ws-connection symbol u8vector
  ;;		#!optional integer boolean boolean fixnum -> undefined))
  ;; (define (send-frame conn op data
  ;;		     #!optional (len (u8vector-length data)) (mask #t) (fin #t) (rsv 0))
- (: send-frame ((struct ws-connection) (struct ws-frame) -> undefined))
+ (: send-frame (ws-connection ws-frame -> undefined))
  (define (send-frame conn frame)
    (let ((f (apply-extension-transforms
 	     (extensions conn)
@@ -351,7 +353,7 @@ for (size_t i = 0; i < 20; ++i) {
 		  (frame-mask? f) (frame-fin f) (frame-rsv f))))
 
  ;; note that send-frame* takes an opcode rather than an optype
- (: send-frame* ((struct ws-connection) fixnum u8vector
+ (: send-frame* (ws-connection fixnum u8vector
 		 integer boolean boolean fixnum -> undefined))
  (define (send-frame* conn op data len mask fin rsv)
    (let* ((buf (make-u8vector (+ 14 len) 0))
@@ -393,10 +395,10 @@ C_return(u-u_orig);
 		 buf op data len mask fin rsv (blob->u8vector/shared (random-bytes (make-blob 4))))))
      (write-u8vector buf (out-port conn) 0 size)))
 
- (: fragment ((struct ws-message) -> (list-of (struct ws-frame))))
- (: send-message ((struct ws-connection) symbol u8vector #!optional integer --> undefined))
- (: send-text-message ((struct ws-connection) string -> undefined))
- (: send-binary-message ((struct ws-connection) blob -> undefined))
+ (: fragment (ws-message -> (list-of ws-frame)))
+ (: send-message (ws-connection symbol u8vector #!optional integer --> undefined))
+ (: send-text-message (ws-connection string -> undefined))
+ (: send-binary-message (ws-connection blob -> undefined))
 
  ;; TODO: fragment long messages?
  (define (fragment msg)
@@ -483,7 +485,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
      (else len0)))
 
  ;; read a single websocket frame; raise signal if protocol violated
- (: recv-frame ((struct ws-connection) -> (struct ws-frame)))
+ (: recv-frame (ws-connection -> ws-frame))
  (define (recv-frame conn)
    (let*-values
        (((i) (in-port conn))
@@ -504,7 +506,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	in-frame-transform
 	f))))
 
- (: recv-message-loop ((struct ws-connection) ((struct ws-message) -> *) -> undefined))
+ (: recv-message-loop (ws-connection (ws-message -> *) -> undefined))
  (define (recv-message-loop conn handler)
    (let ((m (recv-message conn)))
      (if (ws-message? m) (begin
@@ -512,9 +514,9 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 			   (recv-message-loop conn handler)))))
 
 
- (: recv-message ((struct ws-connection) -> (or false (struct ws-message))))
- (: recv-message* ((struct ws-connection) symbol (list-of (struct ws-frame)) integer
-		   -> (or false (struct ws-message))))
+ (: recv-message (ws-connection -> (or false ws-message)))
+ (: recv-message* (ws-connection symbol (list-of ws-frame) integer
+		   -> (or false ws-message)))
  (define (recv-message conn)
    (condition-case
     ;; receive (& process, if extensions are present) a single message
