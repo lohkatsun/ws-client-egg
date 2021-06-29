@@ -1,7 +1,7 @@
 (module
  ws (ws-connect
      ws-connection?
-
+     
      ws-close
 
      recv-message recv-message-loop
@@ -10,6 +10,9 @@
      ws-message?
      message-type message-data* message-data message-size
 
+     ;; extensions
+     permessage-deflate
+     
      ;; low-level interface:
 
      opcode->optype optype->opcode
@@ -23,13 +26,24 @@
      frame-fin frame-rsv frame-opcode frame-optype frame-mask?
      frame-payload-length frame-payload-data
 
-     send-frame recv-frame)
+     send-frame recv-frame
+     
+     ;; for testing, do not eventually expose:
+     swapin swapout
+     extensions
+     parameters
+     extract-parameters
+     parameters->string
+     parameter-list->string
+     string->parameters
+     string->parameter-list
+     )
 
  (import scheme (chicken base) (chicken type) (chicken string)
 	 (chicken condition) (chicken io) (chicken format)
 	 (chicken foreign) (chicken blob) (chicken bitwise)
 	 (chicken random) (chicken tcp)
-	 srfi-4 openssl uri-common intarweb base64 simple-sha1)
+	 srfi-1 srfi-4 openssl uri-common intarweb base64 simple-sha1)
 
  (include "ws-utf8")
  (include "ws-permessage-deflate")
@@ -269,19 +283,22 @@
 
  ;; websocket opening handshake
 
- (: send-client-opening-handshake (input-port (struct uri-common) string -> output-port))
- (define (send-client-opening-handshake o wsuri key)
+ (: send-client-opening-handshake (output-port (struct uri-common) string (list-of ws-extension)
+					       -> output-port))
+ (define (send-client-opening-handshake o wsuri key exts)
    (let* ((host (uri-host wsuri))
 	  (port (uri-port wsuri))
+	  (ext-offer (parameter-list->string (map (lambda (e) ((offer-parameters e))) exts)))
 	  (h (headers
 	      `((host (,host . ,port))
 		(upgrade #("websocket" raw))
 		(connection #("upgrade" raw))
 		(sec-websocket-key #(,key raw))
 		(sec-websocket-version #("13" raw))
-		(sec-websocket-extensions #("permessage-deflate" raw))))))
+		(sec-websocket-extensions #(,ext-offer raw))))))
      ;; apparently write-request might modify out-port, so we
      ;; return this
+     (print h)
      (request-port (write-request (make-request  uri: wsuri port: o  headers: h)))))
 
  (: expected-sec-websocket-accept (string --> string))
@@ -302,8 +319,9 @@ for (size_t i = 0; i < 20; ++i) {
      ;; base64-encode the bytestring
      (base64-encode (substring s 0 20))))
 
- (: read-server-opening-handshake (input-port string -> *))
- (define (read-server-opening-handshake i key)
+ (: read-server-opening-handshake (input-port output-port string (list-of ws-connection)
+					      -> ws-connection))
+ (define (read-server-opening-handshake i o key exts)
    (let* ((res (read-response i))
 	  (h (response-headers res)))
      (case (response-code res)
@@ -319,34 +337,42 @@ for (size_t i = 0; i < 20; ++i) {
 		  (string=? (expected-sec-websocket-accept key)
 			    (header-value 'sec-websocket-accept h))))
 	    (ws-fail 'protocol-error "invalid upgrade headers"))
-	#t)
+	;; negotiate extensions
+	;; (print (header-values 'sec-websocket-extensions h))
+	(let ((conn (make-ws-connection i o exts))
+	      (pm (string->parameter-list
+		   (string-intersperse (header-values 'sec-websocket-extensions h) ","))))
+          (print pm)
+;;	  (print (header-values 'sec-websocket-extensions h))
+	  (filter!
+	   (lambda (e)
+	     (let ((ac ((accept-parameters e) pm)))
+	       (if ac (and (parameters-set! e ac) #t) #f))) exts)
+	  (for-each
+	   (lambda (e) ((extension-init e) conn)) exts)
+;;	  (print "EXT (after)" (extensions conn))
+	  conn))
        ;; for responses other than 101, do nothing except report it to
        ;; the user.
        (else (ws-error 'ws-connect
 		       (sprintf "opening handshake unsuccessful: ~A ~A"
 				(response-code res) (response-reason res)))))))
 
- (: ws-connect (string -> ws-connection))
- (define (ws-connect uri)
+ (: ws-connect (string #!optional (list-of ws-extension) -> ws-connection))
+ (define (ws-connect uri #!optional (exts '()))
    (let*-values
        (((wsuri) (ws-uri uri))
 	((host) (uri-host wsuri))
 	((port) (uri-port wsuri))
 	((key) (base64-encode (random-bytes (make-string 16))))
-	;; open TCP connection to server
+	;; open TCP connection to server, send opening handshake
 	((i o)
 	 (if (eq? 'wss (uri-scheme wsuri))
 	     (ssl-connect* hostname: host port: port)
 	     (tcp-connect host port)))
-	((o*) (send-client-opening-handshake o wsuri key)))
-     ;; TODO: negotiate connections
-     (if (read-server-opening-handshake i key)
-	 ;; (do-nothing is an extension that does nothing, for testing
-	 ;; purposes & to be replaced later once negotiation is
-	 ;; implemented.)
-	 (let ((conn (make-ws-connection i o* (list do-nothing))))
-	   (for-each (lambda (e) ((extension-init e) conn)) (extensions conn))
-	   conn))))
+	((o*) (send-client-opening-handshake o wsuri key exts)))
+     ;; read opening handshake
+     (read-server-opening-handshake i o key exts)))
 
  (: send-frame (ws-connection ws-frame -> undefined))
  (define (send-frame conn frame)
@@ -358,7 +384,7 @@ for (size_t i = 0; i < 20; ++i) {
 
  ;; note that send-frame* takes an opcode rather than an optype
  (: send-frame* (ws-connection fixnum u8vector
-		 integer boolean boolean fixnum -> undefined))
+			       integer boolean boolean fixnum -> undefined))
  (define (send-frame* conn op data len mask fin rsv)
    (let* ((buf (make-u8vector (+ 14 len) 0))
 	  (size ((foreign-lambda* size_t ((u8vector u)
@@ -577,7 +603,5 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
     conn
     (make-ws-frame #t 0 (optype->opcode 'connection-close) #t
 		   2 (reason->close-code reason)))
-   ;; tidy up extensions
    (for-each (lambda (e) ((extension-exit e) conn)) (extensions conn)))
-
  )

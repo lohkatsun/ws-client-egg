@@ -3,7 +3,7 @@
 ;; connects to localhost:9001 and echoes back every text message
 ;; received from the server
 
-(define conn (ws-connect "ws://localhost:9001"))
+(define conn (ws-connect "ws://localhost:9001" (list swapin swapout)))
 
 (recv-message-loop
  conn
