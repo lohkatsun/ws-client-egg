@@ -10,9 +10,6 @@
      ws-message?
      message-type message-data* message-data message-size
 
-     ;; extensions
-     permessage-deflate
-     
      ;; low-level interface:
 
      opcode->optype optype->opcode
@@ -27,16 +24,17 @@
      frame-payload-length frame-payload-data
 
      send-frame recv-frame
-     
+
+     ;; extension interface
+     make-ws-extension
+     extension-desc extension-token extension-params
      ;; for testing, do not eventually expose:
+     extension-desc->string
+     extension-desc*->string
+     string->extension-desc
+     string->extension-desc*
      swapin swapout
      extensions
-     parameters
-     extract-parameters
-     parameters->string
-     parameter-list->string
-     string->parameters
-     string->parameter-list
      )
 
  (import scheme (chicken base) (chicken type) (chicken string)
@@ -45,6 +43,10 @@
 	 (chicken random) (chicken tcp)
 	 srfi-1 srfi-4 openssl uri-common intarweb base64 simple-sha1)
 
+ (define-type ws-connection (struct ws-connection))
+ (define-type ws-frame (struct ws-frame))
+ (define-type ws-message (struct ws-message))
+ 
  (include "ws-utf8")
  (include "ws-permessage-deflate")
 
@@ -158,7 +160,6 @@
 
  ;; websocket frame record
 
- (define-type ws-frame (struct ws-frame))
  (: make-ws-frame (boolean fixnum fixnum boolean integer u8vector --> ws-frame))
  (: ws-frame? (* --> boolean))
  (: frame-fin (ws-frame --> boolean))
@@ -203,7 +204,6 @@
  ;;		  2 (reason->close-code reason)))
 
  ;; websocket message record
- (define-type ws-message (struct ws-message))
  (: make-ws-message (symbol (list-of ws-frame) --> ws-message))
  (: make-ws-message* (symbol (list-of ws-frame) u8vector --> ws-message))
  (: ws-message? (* --> boolean))
@@ -252,20 +252,19 @@
 	    (if (< 12 (message-size m)) "..." (message-data m))))
 
  ;; websocket connection record
- (define-type ws-connection (struct ws-connection))
  (: make-ws-connection (input-port output-port (list-of ws-extension)
 				   --> ws-connection))
  (: ws-connection? (* --> boolean))
  (: in-port (ws-connection --> input-port))
  (: out-port (ws-connection --> output-port))
  (: extensions (ws-connection --> (list-of ws-extension)))
-
+ (: extensions-set! (ws-connection (list-of ws-extension) -> undefined))
  (define-record-type ws-connection
    (make-ws-connection i o exts)
    ws-connection?
    (i in-port)
    (o out-port)
-   (exts extensions))
+   (exts extensions extensions-set!))
 
  ;; websocket uri validation
 
@@ -288,7 +287,7 @@
  (define (send-client-opening-handshake o wsuri key exts)
    (let* ((host (uri-host wsuri))
 	  (port (uri-port wsuri))
-	  (ext-offer (parameter-list->string (map (lambda (e) ((offer-parameters e))) exts)))
+	  (ext-offer (extension-desc*->string (join (map extension-desc* exts))))
 	  (h (headers
 	      `((host (,host . ,port))
 		(upgrade #("websocket" raw))
@@ -298,8 +297,8 @@
 		(sec-websocket-extensions #(,ext-offer raw))))))
      ;; apparently write-request might modify out-port, so we
      ;; return this
-     (print h)
-     (request-port (write-request (make-request  uri: wsuri port: o  headers: h)))))
+     ;; (print h) ;; DEBUG
+     (request-port (write-request (make-request uri: wsuri port: o headers: h)))))
 
  (: expected-sec-websocket-accept (string --> string))
  (define (expected-sec-websocket-accept key)
@@ -338,19 +337,17 @@ for (size_t i = 0; i < 20; ++i) {
 			    (header-value 'sec-websocket-accept h))))
 	    (ws-fail 'protocol-error "invalid upgrade headers"))
 	;; negotiate extensions
-	;; (print (header-values 'sec-websocket-extensions h))
 	(let ((conn (make-ws-connection i o exts))
-	      (pm (string->parameter-list
-		   (string-intersperse (header-values 'sec-websocket-extensions h) ","))))
-          (print pm)
-;;	  (print (header-values 'sec-websocket-extensions h))
-	  (filter!
-	   (lambda (e)
-	     (let ((ac ((accept-parameters e) pm)))
-	       (if ac (and (parameters-set! e ac) #t) #f))) exts)
-	  (for-each
-	   (lambda (e) ((extension-init e) conn)) exts)
-;;	  (print "EXT (after)" (extensions conn))
+	      (edl (string->extension-desc*
+	       	    (string-intersperse (header-values 'sec-websocket-extensions h) ","))))
+	  ;;(print h) ;; DEBUG
+	  ;; use only those extensions which accept the server parameters
+	  (extensions-set! conn
+			   (filter (lambda (e) (extension-in-desc* e edl)) exts))
+	  ;; (print (extensions conn)) ;; DEBUG
+	  ;; initialise each extensions
+	  (for-each (lambda (e) ((extension-init e) conn)) (extensions conn))
+	  ;; finally, return the connection record
 	  conn))
        ;; for responses other than 101, do nothing except report it to
        ;; the user.
@@ -605,3 +602,4 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 		   2 (reason->close-code reason)))
    (for-each (lambda (e) ((extension-exit e) conn)) (extensions conn)))
  )
+ 
