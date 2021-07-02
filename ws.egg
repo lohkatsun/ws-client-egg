@@ -4,4 +4,4 @@
 (dependencies)
 (component-options (csc-options "-O3" "-L" "-lz"))
 (components
-  (extension ws (source-dependencies ws-utf8.scm ws-permessage-deflate.scm))))
+  (extension ws (source-dependencies utf8.scm extensions.scm permessage-deflate.scm))))

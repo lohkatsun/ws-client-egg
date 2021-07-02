@@ -61,8 +61,9 @@
  (define-type ws-frame (struct ws-frame))
  (define-type ws-message (struct ws-message))
 
- (include "ws-utf8")
- (include "ws-permessage-deflate")
+ (include "utf8")
+ (include "extensions")
+ (include "permessage-deflate")
 
  ;; error handling
 

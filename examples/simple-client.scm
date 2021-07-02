@@ -1,9 +1,9 @@
 (import ws (chicken io) (chicken format))
 
-;; connects to localhost:9001 and echoes back every text message
-;; received from the server
+;; connects to localhost:9001 and sends each line read from stdin
+;; until an empty line is encountered.
 
-(define conn (ws-connect "ws://localhost:9001" (list swapin swapout)))
+(define conn (ws-connect "ws://localhost:9001"))
 
 (send-text-message conn (read-line))
 
