@@ -1,4 +1,4 @@
-(import ws (chicken format))
+(import ws-client (chicken format))
 
 (define uri "ws://localhost:9001")
 
@@ -18,13 +18,13 @@
       (begin
 	(printf "case ~A/~A\n" n total)
 	(let ((c (ws-connect
-		  (sprintf "~A/runCase?case=~A&agent=ws-egg" uri n)
+		  (sprintf "~A/runCase?case=~A&agent=ws-client" uri n)
 		  (list (permessage-deflate params)))))
 	  (recv-message-loop c (lambda (m) (send-message c m))))
 	(run-case (+ n 1) total))))
 
 (define (update-report)
-  (let ((c (ws-connect (sprintf "~A/updateReports?agent=ws-egg" uri))))
+  (let ((c (ws-connect (sprintf "~A/updateReports?agent=ws-client" uri))))
     (recv-message-loop c (lambda (m) '()))))
 
 (run-case 1 (get-case-count))

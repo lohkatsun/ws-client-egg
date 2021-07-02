@@ -1,0 +1,3 @@
+(repo git "https://github.com/lohkatsun/ws-client-egg.git")
+(targz "https://github.com/lohkatsun/ws-client-egg/archive/refs/tags/{egg-release}.tar.gz")
+(release "0.2.0")

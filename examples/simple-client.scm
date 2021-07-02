@@ -1,4 +1,4 @@
-(import ws (chicken io) (chicken format))
+(import ws-client (chicken io) (chicken format))
 
 ;; connects to localhost:9001 and sends each line read from stdin
 ;; until an empty line is encountered.
