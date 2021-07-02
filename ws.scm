@@ -25,7 +25,7 @@
      ;; valid-close-code?
 
      ws-frame? data-frame? control-frame?
-     frame-fin frame-rsv
+     frame-fin frame-rsv frame-rsv-bit
      frame-opcode frame-optype frame-mask?
      frame-payload-length frame-payload-data
 
@@ -179,6 +179,7 @@
  (: ws-frame? (* --> boolean))
  (: frame-fin (ws-frame --> boolean))
  (: frame-rsv (ws-frame --> fixnum))
+ (: frame-rsv-bit (ws-frame fixnum --> boolean))
  (: frame-rsv-set! (ws-frame fixnum -> undefined))
  (: frame-rsv-set-bit! (ws-frame fixnum -> undefined))
  (: frame-rsv-unset-bit! (ws-frame fixnum -> undefined))
@@ -205,6 +206,9 @@
    (len  frame-payload-length)
    (data frame-payload-data))
 
+ (define (frame-rsv-bit f b)
+   (= b (bitwise-and b (frame-rsv f))))
+ 
  (define (frame-rsv-set-bit! f b)
    (frame-rsv-set! f (bitwise-ior b (frame-rsv f))))
 

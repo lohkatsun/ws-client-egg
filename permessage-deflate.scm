@@ -90,15 +90,16 @@ zs->next_in = Z_NULL;"))
 
 (: inflate-message* (pm-deflate-state ws-message -> ws-message))
 (define (inflate-message* st m)
-  ;; TODO: check for errors, also handle zero RSV
   ;;(printf "inflate message of size ~A\n" (message-size m))
-  (let* ((zs (in-z-stream st))
-	 (buf (temp-buffer st))
-	 (len (temp-buffer-length st))
-	 (ret ((foreign-lambda* int ((z-stream zs)
-				     (u8vector trg) (int tlen)
-				     (u8vector src) (int slen))
-				"
+  ;; only inflate if RSV1 bit set
+  (if (frame-rsv-bit (car (message-frames m)) 4)
+      (let* ((zs (in-z-stream st))
+	     (buf (temp-buffer st))
+	     (len (temp-buffer-length st))
+	     (ret ((foreign-lambda* int ((z-stream zs)
+					 (u8vector trg) (int tlen)
+					 (u8vector src) (int slen))
+				    "
 int ret;
 zs->next_in  = src; zs->avail_in  = slen;
 zs->next_out = trg; zs->avail_out = tlen;
@@ -112,17 +113,17 @@ zs->avail_in=4;
 ret = inflate(zs,Z_SYNC_FLUSH);
 C_return(ret);
 ")
-	       zs buf len (message-data* m) (message-size m))))
-    (cond
-     ((not (= 0 ret))
-      (ws-fail 'invalid-frame-payload-data (sprintf "zlib inflate error (~A)" ret)))
-     ((= 0 (avail-out zs))
-      (ws-fail 'message-too-big "message too large for inflate buffer"))
-     (else
-      (message-data*-set! m (subu8vector buf 0 (- len (avail-out zs))))
+		   zs buf len (message-data* m) (message-size m))))
+	(cond
+	 ((not (= 0 ret))
+	  (ws-fail 'invalid-frame-payload-data (sprintf "zlib inflate error (~A)" ret)))
+	 ((= 0 (avail-out zs))
+	  (ws-fail 'message-too-big "message too large for inflate buffer"))
+	 (else
+	  (message-data*-set! m (subu8vector buf 0 (- len (avail-out zs))))
 	  ;; unset RSV1 for deflated message
-	  (frame-rsv-unset-bit! (car (message-frames m)) 4))))
-      m)
+	  (frame-rsv-unset-bit! (car (message-frames m)) 4)))))
+  m)
 
 
 (: deflate-message* (pm-deflate-state ws-message -> ws-message))
