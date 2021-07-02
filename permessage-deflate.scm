@@ -11,6 +11,7 @@
 
 ;; TODO: allow the client to configure these options
 (define-foreign-variable Z_DEFLATED int)
+(define-foreign-variable Z_DEFAULT_COMPRESSION int)
 (define-foreign-variable Z_DEFAULT_STRATEGY int)
 
 (define-type z-stream (struct z-stream))
@@ -84,7 +85,7 @@ zs->next_in = Z_NULL;"))
 (define (deflate-init zs mwb)
   (z-stream-init zs)
   (if (> 0 ((foreign-lambda int "deflateInit2" z-stream int int int int int)
-	    zs 3 Z_DEFLATED (- mwb) 9 Z_DEFAULT_STRATEGY))
+	    zs Z_DEFAULT_COMPRESSION Z_DEFLATED (- mwb) 9 Z_DEFAULT_STRATEGY))
       (ws-fail
        'invalid-frame-payload-data "zlib deflate initialisation failed")))
 

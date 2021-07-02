@@ -20,10 +20,7 @@
 	(let ((c (ws-connect
 		  (sprintf "~A/runCase?case=~A&agent=ws-egg" uri n)
 		  (list (permessage-deflate params)))))
-	  (recv-message-loop
-	   c
-	   (lambda (m)
-	     (send-message c (message-type m) (message-data* m)))))
+	  (recv-message-loop c (lambda (m) (send-message c m))))
 	(run-case (+ n 1) total))))
 
 (define (update-report)

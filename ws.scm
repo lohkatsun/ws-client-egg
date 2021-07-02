@@ -1,7 +1,7 @@
 (module
  ws (ws-connect
      ws-connection?
-
+     
      ws-close
 
      recv-message recv-message-loop
@@ -35,11 +35,10 @@
      make-ws-extension
      extension-desc extension-token extension-params
      extension-param-value
-     ;; for testing, do not eventually expose:
-     extension-desc->string
-     extension-desc*->string
-     string->extension-desc
-     string->extension-desc*
+     ;; extension-desc->string
+     ;; extension-desc*->string
+     ;; string->extension-desc
+     ;; string->extension-desc*
      extensions
 
      valid-rsv-set!
@@ -208,13 +207,13 @@
 
  (define (frame-rsv-bit f b)
    (= b (bitwise-and b (frame-rsv f))))
- 
+
  (define (frame-rsv-set-bit! f b)
    (frame-rsv-set! f (bitwise-ior b (frame-rsv f))))
 
  (define (frame-rsv-unset-bit! f b)
    (frame-rsv-set! f (bitwise-and b (bitwise-not (frame-rsv f)))))
- 
+
  (define (frame-optype f)
    (opcode->optype (frame-opcode f)))
 
@@ -232,8 +231,9 @@
  ;;		  2 (reason->close-code reason)))
 
  ;; websocket message record
- (: make-ws-message (symbol (list-of ws-frame) --> ws-message))
+ (: frames->message ((list-of ws-frame) --> ws-message))
  (: make-ws-message* (symbol (list-of ws-frame) u8vector --> ws-message))
+ (: make-ws-message (symbol u8vector --> ws-message))
  (: ws-message? (* --> boolean))
  (: message-type (ws-message --> symbol))
  (: message-frames (ws-message --> (list-of ws-frame)))
@@ -250,6 +250,8 @@
    (frames message-frames message-frames-set!)
    (data message-data* message-data*-set!))
 
+ (define (make-ws-message type data) (make-ws-message* type '() data))
+
  (: conc-frame-payloads (u8vector integer (list-of ws-frame) -> undefined))
  (define (conc-frame-payloads buf start frames)
    (if (not (eq? '() frames))
@@ -260,8 +262,9 @@
 			   "memcpy(trg+start, src, len);") buf (frame-payload-data f) start len)
 	 (conc-frame-payloads buf (+ start len) (cdr frames)))))
 
- (define (make-ws-message type frames)
-   (let* ((len (foldl (lambda (a f) (+ a (frame-payload-length f))) 0 frames))
+ (define (frames->message frames)
+   (let* ((type (frame-optype (car frames)))
+	  (len (foldl (lambda (a f) (+ a (frame-payload-length f))) 0 frames))
 	  (buf (make-u8vector len 0)))
      (conc-frame-payloads buf 0 frames)
      (make-ws-message* type frames buf)))
@@ -467,193 +470,198 @@ C_return(u-u_orig);
 		 buf op data len mask fin rsv (blob->u8vector/shared (random-bytes (make-blob 4))))))
      (write-u8vector buf (out-port conn) 0 size)))
 
- (: fragment (ws-message -> (list-of ws-frame)))
- (: send-message (ws-connection symbol u8vector #!optional integer --> undefined))
+ (: fragment! (ws-message -> (list-of ws-frame)))
+ (: send-message (ws-connection ws-message -> undefined))
  (: send-text-message (ws-connection string -> undefined))
  (: send-binary-message (ws-connection blob -> undefined))
 
  ;; TODO: fragment long messages?
- (define (fragment msg)
+ (define (fragment! msg)
    (let ((lf (list (make-ws-frame
 		    #t 0 (optype->opcode (message-type msg)) #t
 		    (message-size msg) (message-data* msg)))))
-     (message-frames-set! msg lf) lf))
+	 ;; if we are recycling msg from elsewhere (e.g. echoeing), note
+	 ;; that we forget about the fragmentation.
+	 (message-frames-set! msg lf) lf))
 
- (define (send-message conn type data)
-   ;;   (if (eq? '() (extensions conn))
-   ;;       (send-frame* conn (optype->opcode type) data (u8vector-length data) #t #t 0)
-   (let ((m (apply-extension-transforms
-	     (extensions conn)
-	     out-message-transform
-	     (make-ws-message* type '() data))))
-     (for-each (lambda (f) (send-frame conn f)) (fragment m))))
+   (define (send-message conn m)
+     ;; let any extensions process the message
+     (let ((om (apply-extension-transforms
+		(extensions conn)
+		out-message-transform m)))
+					;	     (make-ws-message* type '() data))))
+       (for-each (lambda (f) (send-frame conn f)) (fragment! om))))
 
- (define (send-text-message conn data)
-   (send-message conn 'text (blob->u8vector/shared (string->blob data))))
+   (define (send-text-message conn data)
+     (send-message
+      conn
+      (make-ws-message 'text (blob->u8vector/shared (string->blob data)))))
 
- (define (send-binary-message conn data)
-   (send-message conn 'binary (blob->u8vector/shared data)))
+   (define (send-binary-message conn data)
+     (send-message
+      conn
+      (make-ws-message 'binary (blob->u8vector/shared data))))
 
- ;; these are like read-u8vector and read-u8vector!, except the length
- ;; option is not optional and they throw an exception when the hit an
- ;; eof earlier than expected.
+   ;; these are like read-u8vector and read-u8vector!, except the length
+   ;; option is not optional and they throw an exception when the hit an
+   ;; eof earlier than expected.
 
- (: read-full-u8vector! (integer u8vector #!optional input-port integer -> u8vector))
- (define (read-full-u8vector! len buf
-			      #!optional (port (current-input-port)) (start 0))
-   (let ((ret (read-u8vector! len buf port start)))
-     (if (< len ret)
-	 (ws-exn "connection failed")
-	 buf)))
+   (: read-full-u8vector! (integer u8vector #!optional input-port integer -> u8vector))
+   (define (read-full-u8vector! len buf
+				#!optional (port (current-input-port)) (start 0))
+     (let ((ret (read-u8vector! len buf port start)))
+       (if (< len ret)
+	   (ws-exn "connection failed")
+	   buf)))
 
- (: read-full-u8vector (integer #!optional input-port integer -> u8vector))
- (define (read-full-u8vector len
-			     #!optional (port (current-input-port)) (start 0))
-   (read-full-u8vector! len (make-u8vector len) port start))
+   (: read-full-u8vector (integer #!optional input-port integer -> u8vector))
+   (define (read-full-u8vector len
+			       #!optional (port (current-input-port)) (start 0))
+     (read-full-u8vector! len (make-u8vector len) port start))
 
- (: interpret-b0 (ws-connection fixnum --> boolean fixnum fixnum))
- (define (interpret-b0 conn b)
-   (if (eof-object? b)
-       (ws-exn "connection lost"))
-   (let* ((fin (< 0 (bitwise-and b 128)))
-	  (vrs (valid-rsv conn))
-	  (rsv (arithmetic-shift (bitwise-and b 112) -4))
-	  (op  (bitwise-and b 15)))
-     (if (< vrs (bitwise-ior rsv vrs))
-	 (ws-fail 'protocol-error (sprintf "unsupported RSV bits (~A)\n" rsv)))
-     (if (not (base-protocol-opcode? op))
-	 (ws-fail 'protocol-error "unsupported opcode"))
-     (values fin rsv op)))
+   (: interpret-b0 (ws-connection fixnum --> boolean fixnum fixnum))
+   (define (interpret-b0 conn b)
+     (if (eof-object? b)
+	 (ws-exn "connection lost"))
+     (let* ((fin (< 0 (bitwise-and b 128)))
+	    (vrs (valid-rsv conn))
+	    (rsv (arithmetic-shift (bitwise-and b 112) -4))
+	    (op  (bitwise-and b 15)))
+       (if (< vrs (bitwise-ior rsv vrs))
+	   (ws-fail 'protocol-error (sprintf "unsupported RSV bits (~A)\n" rsv)))
+       (if (not (base-protocol-opcode? op))
+	   (ws-fail 'protocol-error "unsupported opcode"))
+       (values fin rsv op)))
 
- (: interpret-b1 (fixnum --> boolean fixnum))
- (define (interpret-b1 b)
-   (if (eof-object? b)
-       (ws-exn "connection lost"))
-   (let* ((mask (< 0 (bitwise-and b 128)))
-	  (len0   (bitwise-and b 127)))
-     (values mask len0)))
+   (: interpret-b1 (fixnum --> boolean fixnum))
+   (define (interpret-b1 b)
+     (if (eof-object? b)
+	 (ws-exn "connection lost"))
+     (let* ((mask (< 0 (bitwise-and b 128)))
+	    (len0   (bitwise-and b 127)))
+       (values mask len0)))
 
- (: mask-buffer! (integer u8vector integer u8vector -> undefined))
- (define (mask-buffer! len buf start key)
-   ((foreign-lambda* void ((size_t len) (u8vector buf) (size_t start) (u8vector key))
-		     "
+   (: mask-buffer! (integer u8vector integer u8vector -> undefined))
+   (define (mask-buffer! len buf start key)
+     ((foreign-lambda* void ((size_t len) (u8vector buf) (size_t start) (u8vector key))
+		       "
 buf += start;
 for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 "
-		     ) len buf start key))
+		       ) len buf start key))
 
- (: read-payload-length* (input-port fixnum integer -> integer))
- (define (read-payload-length* i rem temp)
-   (if (= rem 0) temp
-       (let ((b (read-byte i)))
-	 (if (eof-object? b)
-	     (ws-exn "connection lost"))
-	 (read-payload-length* i (- rem 1) (+ (* 256 temp) b)))))
+   (: read-payload-length* (input-port fixnum integer -> integer))
+   (define (read-payload-length* i rem temp)
+     (if (= rem 0) temp
+	 (let ((b (read-byte i)))
+	   (if (eof-object? b)
+	       (ws-exn "connection lost"))
+	   (read-payload-length* i (- rem 1) (+ (* 256 temp) b)))))
 
- (: read-payload-length (input-port fixnum -> integer))
- (define (read-payload-length i len0)
-   (case len0
-     ((127) (read-payload-length* i 8 0))
-     ((126) (read-payload-length* i 2 0))
-     (else len0)))
+   (: read-payload-length (input-port fixnum -> integer))
+   (define (read-payload-length i len0)
+     (case len0
+       ((127) (read-payload-length* i 8 0))
+       ((126) (read-payload-length* i 2 0))
+       (else len0)))
 
- ;; read a single websocket frame; raise signal if protocol violated
- (: recv-frame (ws-connection -> ws-frame))
- (define (recv-frame conn)
-   (let*-values
-       (((i) (in-port conn))
-	((b0) (read-byte i))
-	((fin rsv op) (interpret-b0 conn b0))
-	((b1) (read-byte i))
-	((mask len0) (interpret-b1 b1)))
-     (if (control-opcode? op)
-	 (cond
-	  ((not fin) (ws-fail 'protocol-error "fragmented control frame"))
-	  ((< 125 len0) (ws-fail 'protocol-error "control frame with payload length > 125"))))
-     (let* ((len (read-payload-length i len0))
-	    (key (if mask (read-full-u8vector 4 i) #f))
-	    (buf (read-full-u8vector len i))
-	    (f (make-ws-frame fin rsv op mask len buf)))
-       (apply-extension-transforms
-	(extensions conn)
-	in-frame-transform
-	f))))
+   ;; read a single websocket frame; raise signal if protocol violated
+   (: recv-frame (ws-connection -> ws-frame))
+   (define (recv-frame conn)
+     (let*-values
+	 (((i) (in-port conn))
+	  ((b0) (read-byte i))
+	  ((fin rsv op) (interpret-b0 conn b0))
+	  ((b1) (read-byte i))
+	  ((mask len0) (interpret-b1 b1)))
+       (if (control-opcode? op)
+	   (cond
+	    ((not fin) (ws-fail 'protocol-error "fragmented control frame"))
+	    ((< 125 len0) (ws-fail 'protocol-error "control frame with payload length > 125"))))
+       (let* ((len (read-payload-length i len0))
+	      (key (if mask (read-full-u8vector 4 i) #f))
+	      (buf (read-full-u8vector len i))
+	      (f (make-ws-frame fin rsv op mask len buf)))
+	 (apply-extension-transforms
+	  (extensions conn)
+	  in-frame-transform
+	  f))))
 
- (: recv-message-loop* (ws-connection (ws-message -> *) integer -> undefined))
- (: recv-message-loop (ws-connection (ws-message -> *) -> undefined))
- (define (recv-message-loop conn handler)
-   (recv-message-loop* conn handler 0))
+   (: recv-message-loop* (ws-connection (ws-message -> *) integer -> undefined))
+   (: recv-message-loop (ws-connection (ws-message -> *) -> undefined))
+   (define (recv-message-loop conn handler)
+     (recv-message-loop* conn handler 0))
 
- (define (recv-message-loop* conn handler count)
-   ;; (print count) ;; DEBUG
-   (let ((m (recv-message conn)))
-     (if (ws-message? m) (begin
-			   (handler m)
-			   (recv-message-loop* conn handler (+ 1 count))))))
+   (define (recv-message-loop* conn handler count)
+     ;; (print count) ;; DEBUG
+     (let ((m (recv-message conn)))
+       (if (ws-message? m) (begin
+			     (handler m)
+			     (recv-message-loop* conn handler (+ 1 count))))))
 
 
- (: recv-message (ws-connection -> (or false ws-message)))
- (: recv-message* (ws-connection symbol (list-of ws-frame) -> (or false ws-message)))
- (define (recv-message conn)
-   (condition-case
-    ;; receive (& process, if extensions are present) a single message
-    (let ((m (recv-message* conn 'none '())))
-      (if (ws-message? m)
-	  (let ((mt (apply-extension-transforms (extensions conn) in-message-transform m)))
-	    ;; validate text message utf-8
-	    (if (and (eq? 'text (message-type mt))
-		     (not (utf-valid8 (message-data* mt) (message-size mt) 0)))
-		(ws-fail 'protocol-error "text message contains invalid utf-8")
-		mt))
-	  #f))
-    (e (websocket fail)
-       (print (get-condition-property e 'fail 'message))
-       (ws-close conn (get-condition-property e 'fail 'reason)))))
+   (: recv-message (ws-connection -> (or false ws-message)))
+   (: recv-message* (ws-connection symbol (list-of ws-frame) -> (or false ws-message)))
+   (define (recv-message conn)
+     (condition-case
+      ;; receive (& process, if extensions are present) a single message
+      (let ((m (recv-message* conn 'none '())))
+	(if (ws-message? m)
+	    (let ((mt (apply-extension-transforms (extensions conn) in-message-transform m)))
+	      ;; validate text message utf-8
+	      (if (and (eq? 'text (message-type mt))
+		       (not (utf-valid8 (message-data* mt) (message-size mt) 0)))
+		  (ws-fail 'protocol-error "text message contains invalid utf-8")
+		  mt))
+	    #f))
+      (e (websocket fail)
+	 (print (get-condition-property e 'fail 'message))
+	 (ws-close conn (get-condition-property e 'fail 'reason)))))
 
- (define (recv-message* conn type frames)
-   (let* ((f (recv-frame conn))
-	  (op (frame-optype f))
-	  (data (frame-payload-data f))
-	  (len (frame-payload-length f)))
-     ;; (printf "rcvd: ~A\n" f) ;; DEBUG
-     ;; consume continuation & control frames until a complete message
-     ;; can be assembled
-     (case op
-       ;; text/bianry
-       ((text binary)
-	(cond
-	 ((not (frame-fin f))
-	  (recv-message* conn op (cons f frames)))
-	 ((not (eq? 'none type))
-	  (ws-fail 'protocol-error "fragments out of order"))
-	 (else
-	  (make-ws-message op (reverse (cons f frames))))))
-       ;; continuation
-       ((continuation)
-	(cond
-	 ((eq? 'none type) (ws-fail 'protocol-error "nothing to continue"))
-	 ((frame-fin f)    (make-ws-message type (reverse (cons f frames))))
-	 (else (recv-message* conn type (cons f frames)))))
-       ;; ping/pong
-       ((ping)
-	(send-frame conn (make-ws-frame #t 0 (optype->opcode 'pong) #t len data))
-	(recv-message* conn type frames))
-       ((pong)
-	(recv-message* conn type frames))
-       ((connection-close)
-	(if (valid-close-frame-payload? data len)
-	    (ws-close conn 'normal-closure)
-	    (ws-fail 'protocol-error "invalid close frame payload"))))))
+   (define (recv-message* conn type frames)
+     (let* ((f (recv-frame conn))
+	    (op (frame-optype f))
+	    (data (frame-payload-data f))
+	    (len (frame-payload-length f)))
+       ;; (printf "rcvd: ~A\n" f) ;; DEBUG
+       ;; consume continuation & control frames until a complete message
+       ;; can be assembled
+       (case op
+	 ;; text/bianry
+	 ((text binary)
+	  (cond
+	   ((not (frame-fin f))
+	    (recv-message* conn op (cons f frames)))
+	   ((not (eq? 'none type))
+	    (ws-fail 'protocol-error "fragments out of order"))
+	   (else
+	    (frames->message (reverse (cons f frames))))))
+	 ;; continuation
+	 ((continuation)
+	  (cond
+	   ((eq? 'none type) (ws-fail 'protocol-error "nothing to continue"))
+	   ((frame-fin f)    (frames->message (reverse (cons f frames))))
+	   (else (recv-message* conn type (cons f frames)))))
+	 ;; ping/pong
+	 ((ping)
+	  (send-frame conn (make-ws-frame #t 0 (optype->opcode 'pong) #t len data))
+	  (recv-message* conn type frames))
+	 ((pong)
+	  (recv-message* conn type frames))
+	 ((connection-close)
+	  (if (valid-close-frame-payload? data len)
+	      (ws-close conn 'normal-closure)
+	      (ws-fail 'protocol-error "invalid close frame payload"))))))
 
- (: ws-close (ws-connection symbol -> undefined))
- (define (ws-close conn reason)
-   ;; send close frame
-   (send-frame
-    conn
-    (make-ws-frame #t 0 (optype->opcode 'connection-close) #t
-		   2 (reason->close-code reason)))
-   (for-each
-    (lambda (e)
-      ((extension-exit e) (extension-params e) conn))
-    (extensions conn)))
- )
+   (: ws-close (ws-connection symbol -> undefined))
+   (define (ws-close conn reason)
+     ;; send close frame
+     (send-frame
+      conn
+      (make-ws-frame #t 0 (optype->opcode 'connection-close) #t
+		     2 (reason->close-code reason)))
+     (for-each
+      (lambda (e)
+	((extension-exit e) (extension-params e) conn))
+      (extensions conn)))
+   )
