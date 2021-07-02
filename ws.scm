@@ -1,14 +1,19 @@
 (module
  ws (ws-connect
      ws-connection?
-     
+
      ws-close
 
      recv-message recv-message-loop
      send-message send-text-message send-binary-message
 
      ws-message?
-     message-type message-data* message-data message-size
+     message-type
+     message-frames
+     message-data* message-data message-size
+
+     ;; extensions
+     permessage-deflate
 
      ;; low-level interface:
 
@@ -20,7 +25,8 @@
      ;; valid-close-code?
 
      ws-frame? data-frame? control-frame?
-     frame-fin frame-rsv frame-opcode frame-optype frame-mask?
+     frame-fin frame-rsv
+     frame-opcode frame-optype frame-mask?
      frame-payload-length frame-payload-data
 
      send-frame recv-frame
@@ -28,25 +34,33 @@
      ;; extension interface
      make-ws-extension
      extension-desc extension-token extension-params
+     extension-param-value
      ;; for testing, do not eventually expose:
      extension-desc->string
      extension-desc*->string
      string->extension-desc
      string->extension-desc*
-     swapin swapout
      extensions
+
+     valid-rsv-set!
+     valid-rsv-set-bit!
+     valid-rsv-unset-bit!
+     frame-rsv-set! ;; for extensions that use RSV bits
+     frame-rsv-set-bit!
+     frame-rsv-unset-bit!
      )
 
  (import scheme (chicken base) (chicken type) (chicken string)
 	 (chicken condition) (chicken io) (chicken format)
 	 (chicken foreign) (chicken blob) (chicken bitwise)
 	 (chicken random) (chicken tcp)
-	 srfi-1 srfi-4 openssl uri-common intarweb base64 simple-sha1)
+	 srfi-1 srfi-4 foreigners
+	 openssl uri-common intarweb base64 simple-sha1)
 
  (define-type ws-connection (struct ws-connection))
  (define-type ws-frame (struct ws-frame))
  (define-type ws-message (struct ws-message))
- 
+
  (include "ws-utf8")
  (include "ws-permessage-deflate")
 
@@ -164,6 +178,9 @@
  (: ws-frame? (* --> boolean))
  (: frame-fin (ws-frame --> boolean))
  (: frame-rsv (ws-frame --> fixnum))
+ (: frame-rsv-set! (ws-frame fixnum -> undefined))
+ (: frame-rsv-set-bit! (ws-frame fixnum -> undefined))
+ (: frame-rsv-unset-bit! (ws-frame fixnum -> undefined))
  (: frame-opcode (ws-frame --> fixnum))
  (: frame-optype (ws-frame --> symbol))
  (: frame-mask? (ws-frame --> boolean))
@@ -179,7 +196,7 @@
    (make-ws-frame fin rsv op mask len data)
    ws-frame?
    (fin  frame-fin)
-   (rsv  frame-rsv)
+   (rsv  frame-rsv frame-rsv-set!)
    (op   frame-opcode)
    ;; we only remember whether a frame is masked; if it is, the
    ;; payload is masked/unmasked quietly when the frame is processed.
@@ -187,11 +204,17 @@
    (len  frame-payload-length)
    (data frame-payload-data))
 
+ (define (frame-rsv-set-bit! f b)
+   (frame-rsv-set! f (bitwise-ior b (frame-rsv f))))
+
+ (define (frame-rsv-unset-bit! f b)
+   (frame-rsv-set! f (bitwise-and b (bitwise-not (frame-rsv f)))))
+ 
  (define (frame-optype f)
    (opcode->optype (frame-opcode f)))
 
  (define-record-printer (ws-frame f out)
-   (fprintf out "#<ws-frame fin=~A rsv~A op=~A mask=~A payload=~A (~A)>"
+   (fprintf out "#<ws-frame fin=~A rsv=~A op=~A mask=~A payload=~A (~A)>"
 	    (frame-fin f) (frame-rsv f) (frame-optype f) (frame-mask? f)
 	    (if (< 12 (frame-payload-length f)) "..." (frame-payload-data f))
 	    (frame-payload-length f)))
@@ -211,6 +234,7 @@
  (: message-frames (ws-message --> (list-of ws-frame)))
  (: message-frames-set! (ws-message (list-of ws-frame) -> *))
  (: message-data* (ws-message --> u8vector))
+ (: message-data*-set! (ws-message u8vector -> undefined))
  (: message-data (ws-message --> (or string blob)))
  (: message-size (ws-message --> integer))
 
@@ -219,7 +243,7 @@
    ws-message?
    (type message-type)
    (frames message-frames message-frames-set!)
-   (data message-data*))
+   (data message-data* message-data*-set!))
 
  (: conc-frame-payloads (u8vector integer (list-of ws-frame) -> undefined))
  (define (conc-frame-payloads buf start frames)
@@ -252,19 +276,31 @@
 	    (if (< 12 (message-size m)) "..." (message-data m))))
 
  ;; websocket connection record
- (: make-ws-connection (input-port output-port (list-of ws-extension)
+ (: make-ws-connection (input-port output-port fixnum (list-of ws-extension)
 				   --> ws-connection))
  (: ws-connection? (* --> boolean))
  (: in-port (ws-connection --> input-port))
  (: out-port (ws-connection --> output-port))
+ (: valid-rsv (ws-connection --> fixnum))
+ (: valid-rsv-set! (ws-connection fixnum -> undefined))
+ (: valid-rsv-set-bit! (ws-connection fixnum -> undefined))
+ (: valid-rsv-unset-bit! (ws-connection fixnum -> undefined))
  (: extensions (ws-connection --> (list-of ws-extension)))
  (: extensions-set! (ws-connection (list-of ws-extension) -> undefined))
  (define-record-type ws-connection
-   (make-ws-connection i o exts)
+   (make-ws-connection i o rsv exts)
    ws-connection?
    (i in-port)
    (o out-port)
+   (rsv valid-rsv valid-rsv-set!)
    (exts extensions extensions-set!))
+
+ (define (valid-rsv-set-bit! conn b)
+   (valid-rsv-set! conn (bitwise-ior b (valid-rsv conn))))
+
+ (define (valid-rsv-unset-bit! conn b)
+   (valid-rsv-set! conn (bitwise-and b (bitwise-not (valid-rsv conn)))))
+
 
  ;; websocket uri validation
 
@@ -337,16 +373,19 @@ for (size_t i = 0; i < 20; ++i) {
 			    (header-value 'sec-websocket-accept h))))
 	    (ws-fail 'protocol-error "invalid upgrade headers"))
 	;; negotiate extensions
-	(let ((conn (make-ws-connection i o exts))
+	(let ((conn (make-ws-connection i o 0 exts))
 	      (edl (string->extension-desc*
-	       	    (string-intersperse (header-values 'sec-websocket-extensions h) ","))))
-	  ;;(print h) ;; DEBUG
+		    (string-intersperse (header-values 'sec-websocket-extensions h) ","))))
+	  ;; (print h) ;; DEBUG
 	  ;; use only those extensions which accept the server parameters
 	  (extensions-set! conn
 			   (filter (lambda (e) (extension-in-desc* e edl)) exts))
 	  ;; (print (extensions conn)) ;; DEBUG
 	  ;; initialise each extensions
-	  (for-each (lambda (e) ((extension-init e) conn)) (extensions conn))
+	  (for-each
+	   (lambda (e)
+	     ((extension-init e) (extension-params e) conn))
+	   (extensions conn))
 	  ;; finally, return the connection record
 	  conn))
        ;; for responses other than 101, do nothing except report it to
@@ -376,6 +415,7 @@ for (size_t i = 0; i < 20; ++i) {
    (let ((f (apply-extension-transforms
 	     (extensions conn)
 	     out-frame-transform frame)))
+     ;; (printf "sent: ~A\n" f) ;; DEBUG
      (send-frame* conn (frame-opcode f) (frame-payload-data f) (frame-payload-length f)
 		  (frame-mask? f) (frame-fin f) (frame-rsv f))))
 
@@ -390,8 +430,8 @@ for (size_t i = 0; i < 20; ++i) {
 					  (u8vector key))
 				  "
 unsigned char *u_orig = u;
-*(u++)=((8*fin+(rsv&7))<<4)+(op&15);
-*u=128*mask;
+*(u++) = ((8 * fin + (rsv & 7)) << 4) + (op & 15);
+*u = 128 * mask;
 size_t offset;
 if (len < 126)        { *u += len; offset = 0; }
 else if (len < 65536) { *u += 126; offset = 2; }
@@ -410,7 +450,7 @@ if (mask) {
   memcpy(u, key, 4);
   u += 4;
   memcpy(u, data, len);
-  for (size_t i = 0; i < len; ++i) *(u++) ^= key[i%4];
+  for (size_t i = 0; i < len; ++i) *(u++) ^= key[i % 4];
 } else {
   memcpy(u, data, len);
   u += len;
@@ -466,14 +506,15 @@ C_return(u-u_orig);
 			     #!optional (port (current-input-port)) (start 0))
    (read-full-u8vector! len (make-u8vector len) port start))
 
- (: interpret-b0 (fixnum --> boolean fixnum fixnum))
- (define (interpret-b0 b)
+ (: interpret-b0 (ws-connection fixnum --> boolean fixnum fixnum))
+ (define (interpret-b0 conn b)
    (if (eof-object? b)
        (ws-exn "connection lost"))
    (let* ((fin (< 0 (bitwise-and b 128)))
+	  (vrs (valid-rsv conn))
 	  (rsv (arithmetic-shift (bitwise-and b 112) -4))
 	  (op  (bitwise-and b 15)))
-     (if (not (memq rsv '(0)))
+     (if (< vrs (bitwise-ior rsv vrs))
 	 (ws-fail 'protocol-error (sprintf "unsupported RSV bits (~A)\n" rsv)))
      (if (not (base-protocol-opcode? op))
 	 (ws-fail 'protocol-error "unsupported opcode"))
@@ -517,7 +558,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
    (let*-values
        (((i) (in-port conn))
 	((b0) (read-byte i))
-	((fin rsv op) (interpret-b0 b0))
+	((fin rsv op) (interpret-b0 conn b0))
 	((b1) (read-byte i))
 	((mask len0) (interpret-b1 b1)))
      (if (control-opcode? op)
@@ -533,12 +574,17 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	in-frame-transform
 	f))))
 
+ (: recv-message-loop* (ws-connection (ws-message -> *) integer -> undefined))
  (: recv-message-loop (ws-connection (ws-message -> *) -> undefined))
  (define (recv-message-loop conn handler)
+   (recv-message-loop* conn handler 0))
+
+ (define (recv-message-loop* conn handler count)
+   ;; (print count) ;; DEBUG
    (let ((m (recv-message conn)))
      (if (ws-message? m) (begin
 			   (handler m)
-			   (recv-message-loop conn handler)))))
+			   (recv-message-loop* conn handler (+ 1 count))))))
 
 
  (: recv-message (ws-connection -> (or false ws-message)))
@@ -564,6 +610,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	  (op (frame-optype f))
 	  (data (frame-payload-data f))
 	  (len (frame-payload-length f)))
+     ;; (printf "rcvd: ~A\n" f) ;; DEBUG
      ;; consume continuation & control frames until a complete message
      ;; can be assembled
      (case op
@@ -600,6 +647,8 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
     conn
     (make-ws-frame #t 0 (optype->opcode 'connection-close) #t
 		   2 (reason->close-code reason)))
-   (for-each (lambda (e) ((extension-exit e) conn)) (extensions conn)))
+   (for-each
+    (lambda (e)
+      ((extension-exit e) (extension-params e) conn))
+    (extensions conn)))
  )
- 

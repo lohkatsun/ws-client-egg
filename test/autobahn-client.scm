@@ -9,11 +9,17 @@
     (recv-message-loop c (lambda (m) '())))
   n))
 
+(define params
+  '((("client_max_window_bits" . #t)
+     ("client_no_context_takeover" . #t))))
+
 (define (run-case n total)
   (if (<= n total)
       (begin
 	(printf "case ~A/~A\n" n total)
-	(let ((c (ws-connect (sprintf "~A/runCase?case=~A&agent=ws-egg" uri n))))
+	(let ((c (ws-connect
+		  (sprintf "~A/runCase?case=~A&agent=ws-egg" uri n)
+		  (list (permessage-deflate params)))))
 	  (recv-message-loop
 	   c
 	   (lambda (m)

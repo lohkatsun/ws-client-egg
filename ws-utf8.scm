@@ -36,7 +36,7 @@ for (size_t i = 0; i < len; ++i) {
     (byte & 0x3fu) | (codep << 6) :
     (0xff >> type) & byte;
 
-  state = utf8d[256 + state*16 + type];
+  state = utf8d[256 + state * 16 + type];
 }
 
 C_return(state);
