@@ -60,12 +60,12 @@ this library is {{permessage-deflate}}; see the
 WebSocket messages are represented with the record type {{ws-message}}.
 
 For a message {{m}}, The procedure {{(message-type m)}} yields the
-type of {{m}} as specified by the opcode of its first frame. In the
-absence of extensions, this is either {{'text}} or {{'binary}}.
+type of {{m}} as specified by the opcode of its first frame, which is
+either {{'text}} or {{'binary}}.
 
 If {{m}} is a message obtained with {{recv-message}},
 {{(message-frames m)}} is a list of frames from which {{m}} has been
-assembled, after any per-frame transformas defined by extensions have
+assembled, after any per-frame transforms defined by extensions have
 been applied. In the absence of extensions which apply per-message
 transforms, {{(message-data* m)}} is the concatenation of the contents
 of each {{(frame-payload-data f)}} for {{f}} in {{(message-frames
@@ -93,7 +93,7 @@ connection.
 
 <procedure>(send-message WS-CONNECTION WS-MESSAGE)</procedure>
 
-Sends a message to the server. Curently only useful
+Sends a message to the server. Currently only useful
 for echoing received messages; see instead {{send-text-message}} and
 {{send-binary-message}} below.
 
@@ -117,10 +117,6 @@ closed cleanly.
 Sends a frame with optype {{'connection-close}} to the server, with
 payload the close code corresponding to the reason given by {{SYMBOL}}
 (see {{reason->close-code}}).
-
-If any extensions are in use, it in addition invokes the finalising
-procedures for each extension; see the section on
-[[#extension-interface|extensions]].
 
 Once the application has called {{ws-close}} with a connection, it
 should not send any further data through the connection, though it may
@@ -197,9 +193,10 @@ Maps between opcodes and optypes:
 <tr><td>{{#xa}}</td><td>{{'pong}}</td></tr>
 </table>
 
-Signals a condition of kind {{'websocket 'exn}} if an unrecognised
-optype or opcode is supplied. The application is expected to redefine
-this procedure if it wishes to make use of reserved opcodes.
+Signals a composite condition of kind {{'websocket 'exn}} if an
+unrecognised optype or opcode is supplied. The application is expected
+to redefine this procedure if it wishes to make use of reserved
+opcodes.
 
 <procedure>(reason->close-code SYMBOL) -> U8VECTOR</procedure>
 <procedure>(close-code->reason INTEGER) -> SYMBOL</procedure>
@@ -226,11 +223,11 @@ The procedure {{reason->close-code}} returns the close code as a
 {{u8vector}} rather than an integer; this is so that the value can be
 included into a frame payload without conversion.
 
-Signals a condition of kind {{'websocket 'exn}} if an unrecognised
-close code or reason is supplied. The application is expected to
-redefine this procedure if it wishes to make use of reserved close
-codes. Note that not all of the close codes listed here are expected
-to occur in a connection close frame.
+Signals a composite condition of kind {{'websocket 'exn}} if an
+unrecognised close code or reason is supplied. The application is
+expected to redefine this procedure if it wishes to make use of
+reserved close codes. Note that not all of the close codes listed here
+are expected to occur in a connection close frame.
 
 ==== The {{permessage-deflate}} extension
 
@@ -260,17 +257,15 @@ specify
 so that the {{Sec-WebSocket-Extensions}} header in the client opening
 handshake will contain the string
 
-<enscript>
-permessage-deflate;server_max_window_bits=10,permessage-deflate
-</enscript>
+  permessage-deflate;server_max_window_bits=10,permessage-deflate
 
 ==== Handling exceptions
 
-When a procedure encounteres a situation which should result in the
+When a procedure encounters a situation which should result in the
 WebSocket connection being failed, it signals a composite condition of
 kind {{'websocket 'fail}}, with the following properties:
 
-; reason : a symbol representing the reason for failing the connection, ann
+; reason : a symbol representing the reason for failing the connection, and
 ; message : a string describing the exception.
 
 The application may choose to catch and handle these exceptions, such
@@ -311,3 +306,7 @@ examples.
 === License
 
 BSD
+
+=== Version History
+
+; 0.2.0 : Initial release
