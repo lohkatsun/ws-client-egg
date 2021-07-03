@@ -46,10 +46,7 @@
   (ini extension-init)
   (exi extension-exit))
 
-(define (extension-desc e)
-  (let ((d (extension-desc* e)))
-    (if (< 1 (length d)) (ws-exn "extension parameters not yet set"))
-    (car d)))
+(define (extension-desc e) (car (extension-desc* e)))
 
 (define (extension-token e) (caar (extension-desc* e)))
 (define (extension-params e) (cdr (extension-desc e)))

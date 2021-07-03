@@ -9,6 +9,7 @@
   send-message send-text-message send-binary-message
 
   ws-message?
+  ;; make-ws-message
   message-type
   message-frames
   message-data* message-data message-size
@@ -24,6 +25,7 @@
   reason->close-code close-code->reason
   ;; valid-close-code?
 
+  make-ws-frame
   ws-frame? data-frame? control-frame?
   frame-fin frame-rsv frame-rsv-bit
   frame-opcode frame-optype frame-mask?
@@ -32,21 +34,22 @@
   send-frame recv-frame
 
   ;; extension interface
-  make-ws-extension
-  extension-desc extension-token extension-params
+
+   make-ws-extension
+  ;; extension-desc extension-token extension-params
   extension-param-value
   ;; extension-desc->string
   ;; extension-desc*->string
   ;; string->extension-desc
   ;; string->extension-desc*
-  extensions
+  ;; extensions
 
   valid-rsv-set!
   valid-rsv-set-bit!
   valid-rsv-unset-bit!
-  frame-rsv-set! ;; for extensions that use RSV bits
-  frame-rsv-set-bit!
-  frame-rsv-unset-bit!
+  ;; frame-rsv-set!
+  ;; frame-rsv-set-bit!
+  ;; frame-rsv-unset-bit!
   )
 
  (import scheme (chicken base) (chicken type) (chicken string)
@@ -590,7 +593,11 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
  (: recv-message-loop* (ws-connection (ws-message -> *) integer -> undefined))
  (: recv-message-loop (ws-connection (ws-message -> *) -> undefined))
  (define (recv-message-loop conn handler)
-   (recv-message-loop* conn handler 0))
+   (condition-case
+    (recv-message-loop* conn handler 0)
+    (e (websocket fail)
+       (print (get-condition-property e 'fail 'message))
+       (ws-close conn (get-condition-property e 'fail 'reason)))))
 
  (define (recv-message-loop* conn handler count)
    ;; (print count) ;; DEBUG
@@ -603,20 +610,16 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
  (: recv-message (ws-connection -> (or false ws-message)))
  (: recv-message* (ws-connection symbol (list-of ws-frame) -> (or false ws-message)))
  (define (recv-message conn)
-   (condition-case
-    ;; receive (& process, if extensions are present) a single message
-    (let ((m (recv-message* conn 'none '())))
-      (if (ws-message? m)
-	  (let ((mt (apply-extension-transforms (extensions conn) in-message-transform m)))
-	    ;; validate text message utf-8
-	    (if (and (eq? 'text (message-type mt))
-		     (not (utf-valid8 (message-data* mt) (message-size mt) 0)))
-		(ws-fail 'protocol-error "text message contains invalid utf-8")
-		mt))
-	  #f))
-    (e (websocket fail)
-       (print (get-condition-property e 'fail 'message))
-       (ws-close conn (get-condition-property e 'fail 'reason)))))
+   ;; receive (& process, if extensions are present) a single message
+   (let ((m (recv-message* conn 'none '())))
+     (if (ws-message? m)
+	 (let ((mt (apply-extension-transforms (extensions conn) in-message-transform m)))
+	   ;; validate text message utf-8
+	   (if (and (eq? 'text (message-type mt))
+		    (not (utf-valid8 (message-data* mt) (message-size mt) 0)))
+	       (ws-fail 'protocol-error "text message contains invalid utf-8")
+	       mt))
+	 #f)))
 
  (define (recv-message* conn type frames)
    (let* ((f (recv-frame conn))
@@ -660,6 +663,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
     conn
     (make-ws-frame #t 0 (optype->opcode 'connection-close) #t
 		   2 (reason->close-code reason)))
+   ;; finalise extensions
    (for-each
     (lambda (e)
       ((extension-exit e) (extension-params e) conn))
