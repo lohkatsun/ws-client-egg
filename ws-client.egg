@@ -5,6 +5,6 @@
 (category web)
 (foreign-dependencies "zlib-1.2.11")
 (dependencies srfi-1 foreigners base64 simple-sha1 uri-common intarweb openssl)
-(component-options (csc-options "-O3" "-L" "-lz"))
+(component-options (csc-options "-O3") (link-options "-L" "-lz"))
 (components
   (extension ws-client (source-dependencies utf8.scm extensions.scm permessage-deflate.scm))))
