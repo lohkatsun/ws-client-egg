@@ -1,0 +1,376 @@
+== ws-client
+
+[[toc:]]
+
+=== Description
+
+An implementation of the client side of the WebSocket Protocol
+([[https://www.rfc-editor.org/rfc/rfc6455.html|RFC6455]]), including
+the {{permessage-deflate}} extension
+([[https://www.rfc-editor.org/rfc/rfc7692.html|RFC7692]]). It passes
+all of the [[https://github.com/crossbario/autobahn-testsuite|Autobahn
+Testsuite]] compliance tests.
+
+=== Requirements
+
+* [[srfi-1]]
+* [[foreigners]]
+* [[openssl]]
+* [[uri-common]]
+* [[intarweb]]
+* [[base64]]
+* [[simple-sha1]]
+
+External dependencies:
+
+* [[https://www.zlib.net/|zlib]]
+
+Uses [[tcp6]] if it is imported together with this extension.
+
+=== API
+
+====== Establishing a WebSocket connection
+
+<record>ws-connection</record>
+
+<procedure>(ws-connect STRING #!optional (list WS-EXTENSION ...)) -> WS-CONNECTION</procedure>
+
+The state of a WebSocket connection is stored in a record of type
+{{ws-connection}}.
+
+The procedure {{ws-connect}} establishes a WebSocket connection to a
+server. The argument {{STRING}} should be a valid
+[[https://www.rfc-editor.org/rfc/rfc6455.html#section-3|WebSocket
+URI]].
+
+To use WebSockets over TLS, supply a URI with scheme {{wss}}.
+
+The procedure {{ws-connect}} optionally accepts a list of extensions
+the client hopes to use; see the section on
+[[#extensions-interface|extensions]].
+
+====== Sending and receiving messages
+
+<record>ws-message</record>
+<procedure>(message-type WS-MESSAGE) -> SYMBOL</procedure>
+<procedure>(message-data* WS-MESSAGE) -> U8VECTOR</procedure>
+<procedure>(message-frames WS-MESSAGE) -> U8VECTOR</procedure>
+
+WebSocket messages are represented with the record type {{ws-message}}.
+
+For a message {{m}}, The procedure {{(message-type m)}} yields the
+type of {{m}} as specified by the opcode of its first frame. In the
+absence of extensions, this is either {{'text}} or {{'binary}}.
+
+If {{m}} is a message obtained with {{recv-message}},
+{{(message-frames m)}} is a list of frames from which {{m}} has been
+assembled, after any per-frame transformas defined by extensions have
+been applied. In the absence of extensions which apply per-message
+transforms, {{(message-data* m)}} is the concatenation of the contents
+of each {{(frame-payload-data f)}} for {{f}} in {{(message-frames
+m)}}.
+
+<procedure>(message-size WS-MESSAGE) -> INTEGER</procedure>
+
+Equivalent to {{(u8vector-length (message-data* WS-MESSAGE))}}.
+
+<procedure>(message-data WS-MESSAGE) -> STRING or BLOB</procedure>
+
+The procedure {{(message-data m)}} yields {{(message-data* m)}}
+converted to the corresponding type depending on {{(message-type m)}}.
+
+<procedure>(recv-message WS-CONNECTION) -> WS-MESSAGE or FALSE</procedure>
+
+Receives a message from the server. The procedure
+quietly processes any control frames encountered while assembling the
+message.
+
+If it encounters a {{connection-close}} frame, it closes the
+connection and returns {{#f}} instead. Once this has happened, the
+application should not invoke {{recv-message}} again on the same
+connection.
+
+<procedure>(send-message WS-CONNECTION WS-MESSAGE)</procedure>
+
+Sends a message to the server. Curently only useful
+for echoing received messages; see instead {{send-text-message}} and
+{{send-binary-message}} below.
+
+<procedure>(send-text-message WS-CONNECTION STRING)</procedure>
+<procedure>(send-binary-message WS-CONNECTION BLOB)</procedure>
+
+Sends a text (resp. binary) message to (resp. from) the server.
+
+<procedure>(recv-message-loop WS-CONNECTION HANDLER)</procedure>
+
+Receives messages from the server and calls the procedure {{HANDLER}}
+on each received message, until the connection is closed. The
+procedure responds to (or sends, e.g. in the case of closure due to a
+protocol error) connection close frames so that the connection is
+closed cleanly.
+
+====== Closing a WebSocket connection
+
+<procedure>(ws-close WS-CONNECTION SYMBOL)</procedure>
+
+Sends a frame with optype {{'connection-close}} to the server, with
+payload the close code corresponding to the reason given by {{SYMBOL}}
+(see {{reason->close-code}}).
+
+If any extensions are in use, it in addition invokes the finalising
+procedures for each extension; see the section on
+[[#extension-interface|extensions]].
+
+Once the application has called {{ws-close}} with a connection, it
+should not send any further data through the connection, though it may
+still receive messages until the server sends a connection close frame
+in return.
+
+==== Low-level interface
+
+An interface is provided for when an application wishes to interact
+with the connection on the level of individual WebSocket frames.
+
+Care should be taken if these procedures are used in conjunction with
+the message-level interface: for example, if the first frame of a
+fragmented message has been consumed using {{recv-frame}}, invoking
+{{recv-message}} results in an error on the next frame since there is
+nothing to continue.
+
+
+<record>ws-frame</record>
+<procedure>(frame-fin WS-FRAME) -> BOOLEAN</procedure>
+<procedure>(frame-rsv WS-FRAME) -> INTEGER</procedure>
+<procedure>(frame-opcode WS-FRAME) -> INTEGER</procedure>
+<procedure>(frame-optype WS-FRAME) -> SYMBOL</procedure>
+<procedure>(frame-mask? WS-FRAME) -> BOOLEAN</procedure>
+<procedure>(frame-payload-length WS-FRAME) -> INTEGER</procedure>
+<procedure>(frame-payload-data WS-FRAME) -> U8VECTOR</procedure>
+
+WebSocket messages are represented with the record type {{ws-frame}}.
+
+For a frame {{f}}:
+* {{(frame-fin f)}} is {{#t}} iff the {{FIN}} bit is set.
+
+* {{(frame-rsv f)}} are the three {{RSV}} bits interpreted as an
+integer. For example, if exactly the {{RSV2}} and {{RSV3}} bits are
+set, {{(frame-rsv f)}} is {{3}}.
+
+* {{(frame-opcode f)}} (resp. {{(frame-optype f)}} is the opcode
+(resp. optype) of {{f}}.
+
+* {{(frame-mask? f)}} is {{#t}} iff the {{MASK}} bit is set. This
+should be {{#t}} for every outbound frame and {{#f}} for every frame
+received. A {{ws-frame}} record retains no information about the
+masking key; masking/unmasking is handled quietly by the procedures
+{{send-frame}} and {{recv-frame}}.
+
+* The first {{(frame-payload-length f)}} bytes of the vector
+{{(frame-payload-data f)}} is the payload of {{f}}. Note that
+{{(frame-payload-length f)}} is ''not'' guaranteed to be the same as
+{{(u8vector-length (frame-payload-data f))}}.
+
+<procedure>(frame-rsv-bit WS-FRAME N) -> BOOLEAN</procedure>
+
+Is {{#t}} iff the {{bitwise-and}} of {{N}} with the result of
+{{frame-rsv}} is nonzero. For example, {{(frame-rsv-bit f 4)}} is
+{{#t}} iff the {{RSV1}} bit is set on the frame {{f}}.
+
+<procedure>(recv-frame WS-CONNECTION) -> WS-FRAME</procedure>
+<procedure>(send-frame WS-CONNECTION WS-FRAME)</procedure>
+
+Receives (resp. sends) a frame from (resp. to) the server.
+
+<procedure>(opcode->optype INTEGER) -> SYMBOL</procedure>
+<procedure>(optype->opcode SYMBOL) -> INTEGER</procedure>
+
+Maps between opcodes and optypes:
+
+<table>
+<tr><th>opcode</th><th>optype</th></tr>
+<tr><td>{{#x0}}</td><td>{{'continuation}}</td></tr>
+<tr><td>{{#x1}}</td><td>{{'text}}</td></tr>
+<tr><td>{{#x2}}</td><td>{{'binary}}</td></tr>
+<tr><td>{{#x8}}</td><td>{{'connection-close}}</td></tr>
+<tr><td>{{#x9}}</td><td>{{'ping}}</td></tr>
+<tr><td>{{#xa}}</td><td>{{'pong}}</td></tr>
+</table>
+
+Signals a condition of kind {{'websocket 'exn}} if an unrecognised
+optype or opcode is supplied. The application is expected to redefine
+this procedure if it wishes to make use of reserved opcodes.
+
+<procedure>(reason->close-code SYMBOL) -> U8VECTOR</procedure>
+<procedure>(close-code->reason INTEGER) -> SYMBOL</procedure>
+
+Maps between reasons for closing a connection and the corresponding close codes:
+
+<table>
+<tr><th>code (integer)</th><th>code (u8vector)</th><th>reason</th></tr>
+<tr><td>{{1000}}</td><td>{{#u8(3 232)}}</td><td>{{'normal-closure}}</td></tr>
+<tr><td>{{1001}}</td><td>{{#u8(3 233)}}</td><td>{{'going-away}}</td></tr>
+<tr><td>{{1002}}</td><td>{{#u8(3 234)}}</td><td>{{'protocol-error}}</td></tr>
+<tr><td>{{1003}}</td><td>{{#u8(3 235)}}</td><td>{{'unsupported-data}}</td></tr>
+<tr><td>{{1005}}</td><td>{{#u8(3 237)}}</td><td>{{'no-status-rcvd}}</td></tr>
+<tr><td>{{1006}}</td><td>{{#u8(3 238)}}</td><td>{{'abnormal-closure}}</td></tr>
+<tr><td>{{1007}}</td><td>{{#u8(3 239)}}</td><td>{{'invalid-frame-payload-data}}</td></tr>
+<tr><td>{{1008}}</td><td>{{#u8(3 240)}}</td><td>{{'policy-violation}}</td></tr>
+<tr><td>{{1009}}</td><td>{{#u8(3 241)}}</td><td>{{'message-too-big}}</td></tr>
+<tr><td>{{1010}}</td><td>{{#u8(3 242)}}</td><td>{{'mandatory-ext}}</td></tr>
+<tr><td>{{1011}}</td><td>{{#u8(3 243)}}</td><td>{{'internal-server-error}}</td></tr>
+<tr><td>{{1015}}</td><td>{{#u8(3 247)}}</td><td>{{'tls-handshake}}</td></tr>
+</table>
+
+The procedure {{reason->close-code}} returns the close code as a
+{{u8vector}} rather than an integer; this is so that the value can be
+included into a frame payload without conversion.
+
+Signals a condition of kind {{'websocket 'exn}} if an unrecognised
+close code or reason is supplied. The application is expected to
+redefine this procedure if it wishes to make use of reserved close
+codes. Note that not all of the close codes listed here are expected
+to occur in a connection close frame.
+
+==== Extensions interface
+
+The library provides an interface for applications who wish to define
+extensions to be used with WebSocket connections.
+
+<procedure>(make-ws-extension STRING (list EXTENSION-PARAMETERS) IN-FRAME-TRANSFORM OUT-FRAME-TRANSFORM IN-MESSAGE-TRANSFORM OUT-MESSAGE-TRANSFORM #!optional INIT EXIT) -> WS-EXTENSION</procedure>
+
+Constructs an extension to be passed to {{ws-connect}}. The arguments
+are as follows:
+
+* {{STRING}}: the name of the extension.
+
+* {{EXTENSION-PARAMETERS}}: list of extension parameters to be
+  offered during the opening handshake. Each item in the list should
+  be an {{alist}} where each item is a pair of strings {{(NAME
+  . VALUE)}}, or {{(NAME . #t)}} if the parameter does not have an
+  associated value.
+
+* {{IN-FRAME-TRANSFORM}}/{{OUT-FRAME-TRANSFORM}}: a procedure which
+  processes an inbound (resp. outbound) frame. Should accept a single
+  argument of type {{ws-frame}}, and return a {{ws-frame}}, possibly
+  by mutating the frame it was given. If this is {{#f}}, the transform
+  is the identity.
+
+* {{IN-MESSAGE-TRANSFORM}}/{{OUT-MESSAGE-TRANSFORM}}: a procedure
+  which processes an inbound (resp. outbound) message. Should accept a
+  single argument of type {{ws-message}}, and return a {{ws-message}},
+  possibly by mutating the frame it was given. If this is {{#f}}, the
+  transform is the identity.
+
+* {{INIT}}: a procedure which initialises the extension. Called for its
+  side-effects when the server handshake is received, and is supplied
+  two arguments: an {{alist}} of parameters specified by the server,
+  and the WebSocket connection to which the extension is attached.
+
+* {{EXIT}}: a procedure which is invoked once the WebSocket connection has
+  been closed.
+
+For example, if {{NAME}} is {{"foo""}} and {{EXTENSION-PARAMETERS}} is
+{{'(() (("bar" . #t) ("baz" . "2")))}}, the
+{{Sec-WebSocket-Extensions}} header in the client's opening handshake
+will contain the string {{"foo,foo;bar;baz=2"}}.
+
+The application specifies the extensions it wishes to use by supplying
+a list of extensions as an optional argument to {{ws-connect}}. If the
+server agrees to use an extension (i.e. if the
+{{Sec-WebSocket-Extensions}} header in the server handshake contains
+the name of the extension), the extension is initialised and the
+associated transforms are applied to every frame/message.
+
+<procedure>(extension-param-value STRING EXTENSION-PARAMETERS)</procedure>
+
+Extracts the value of a parameter from a list of parameters; exactly
+the same as {{(alist-ref STRING EXTENSION-PARAMETERS string-ci=?)}}.
+
+<procedure>(valid-rsv-set! WS-CONNECTION INTEGER)</procedure>
+<procedure>(valid-rsv-set-bit! WS-CONNECTION INTEGER)</procedure>
+<procedure>(valid-rsv-unset-bit! WS-CONNECTION INTEGER)</procedure>
+
+In the absence of extensions, every incoming frame should have all
+{{RSV}} bits unset. So that the connection does not fail when a
+nonzero {{RSV}} bit is detected, an extension which uses an {{RSV}}
+bit should modify the {{ws-connection}} record so that it accepts
+nonzero {{RSV}} bits.
+
+====== The {{permessage-deflate}} extension
+
+This library provides an implementation of the {{permessage-deflate}}
+extension, using {{zlib}} for compression/decompression.
+
+<procedure>(permessage-deflate PARAMETERS) -> WS-EXTENSION</procedure>
+
+To offer to use this extension during the opening handshake, supply it
+as an optional argument to {{ws-connect}}.
+
+The argument {{PARAMETERS}} should be a list in which each item is an
+{{alist}}, each of whose items is in turn a pairs of strings
+{{(PARAMETER . VALUE)}} or a pair of form {{(PARAMETER . #t)}}. These
+specify the parameters to be advertised during the opening handshake.
+
+For example, to ask the server to use an LZ77 sliding window of length
+no greater than 1024, but to fall back to {{permessage-deflate}}
+without this parameter if the server does not support it, one might
+supply
+
+<enscript>
+'((("server_max_window_bits" . "10")) ())
+</enscript>
+
+so that the {{Sec-WebSocket-Extensions}} header in the client opening
+handshake will contain the string
+
+<enscript>
+permessage-deflate;server_max_window_bits=10,permessage-deflate
+</enscript>
+
+==== Handling exceptions
+
+When a procedure encounteres a situation which should result in the
+WebSocket connection being failed, it signals a composite condition of
+kind {{'websocket 'fail}}, with the following properties:
+
+; reason : a symbol representing the reason for failing the connection, ann
+; message : a string describing the exception.
+
+The application may choose to catch and handle these exceptions, such
+as by calling {{ws-close}} with the corresponding arguments (see
+{{reason->close-code}}). The procedure {{recv-message-loop}} does
+this automatically.
+
+For cases where it does not make sense to attempt to close the
+connection (for example if the underlying TCP connection fails, or if
+an error results from user input instead of a problem with data
+received from the server) a condition of kind {{'websocket 'exn}} is
+signalled instead, with the following properties:
+
+; message : a string describing the exception.
+
+=== Examples
+
+A client which connects to {{localhost}} port {{9001}} without TLS,
+and echoes back every text message it receives from the server:
+
+<enscript>
+(import ws-client)
+
+(let ((conn (ws-connect "ws://localhost:9001")))
+  (recv-message-loop conn
+    (lambda (m)
+      (if (eq? 'text (message-type m))
+          (send-text-message conn (message-data m))))))
+</enscript>
+
+See the {{examples}} folder in the source repository for more
+examples.
+
+=== Author
+
+[[/users/loh-ka-tsun|Lo̍h Ka-tsùn]]
+
+=== License
+
+BSD
