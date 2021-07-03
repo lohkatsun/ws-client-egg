@@ -46,8 +46,9 @@ URI]].
 To use WebSockets over TLS, supply a URI with scheme {{wss}}.
 
 The procedure {{ws-connect}} optionally accepts a list of extensions
-the client hopes to use; see the section on
-[[#extensions-interface|extensions]].
+the client hopes to use. The only extension currently supported by
+this library is {{permessage-deflate}}; see the
+[[#the-permessage-deflateextension|relevant section]].
 
 ====== Sending and receiving messages
 
@@ -231,80 +232,16 @@ redefine this procedure if it wishes to make use of reserved close
 codes. Note that not all of the close codes listed here are expected
 to occur in a connection close frame.
 
-==== Extensions interface
-
-The library provides an interface for applications who wish to define
-extensions to be used with WebSocket connections.
-
-<procedure>(make-ws-extension STRING (list EXTENSION-PARAMETERS) IN-FRAME-TRANSFORM OUT-FRAME-TRANSFORM IN-MESSAGE-TRANSFORM OUT-MESSAGE-TRANSFORM #!optional INIT EXIT) -> WS-EXTENSION</procedure>
-
-Constructs an extension to be passed to {{ws-connect}}. The arguments
-are as follows:
-
-* {{STRING}}: the name of the extension.
-
-* {{EXTENSION-PARAMETERS}}: list of extension parameters to be
-  offered during the opening handshake. Each item in the list should
-  be an {{alist}} where each item is a pair of strings {{(NAME
-  . VALUE)}}, or {{(NAME . #t)}} if the parameter does not have an
-  associated value.
-
-* {{IN-FRAME-TRANSFORM}}/{{OUT-FRAME-TRANSFORM}}: a procedure which
-  processes an inbound (resp. outbound) frame. Should accept a single
-  argument of type {{ws-frame}}, and return a {{ws-frame}}, possibly
-  by mutating the frame it was given. If this is {{#f}}, the transform
-  is the identity.
-
-* {{IN-MESSAGE-TRANSFORM}}/{{OUT-MESSAGE-TRANSFORM}}: a procedure
-  which processes an inbound (resp. outbound) message. Should accept a
-  single argument of type {{ws-message}}, and return a {{ws-message}},
-  possibly by mutating the frame it was given. If this is {{#f}}, the
-  transform is the identity.
-
-* {{INIT}}: a procedure which initialises the extension. Called for its
-  side-effects when the server handshake is received, and is supplied
-  two arguments: an {{alist}} of parameters specified by the server,
-  and the WebSocket connection to which the extension is attached.
-
-* {{EXIT}}: a procedure which is invoked once the WebSocket connection has
-  been closed.
-
-For example, if {{NAME}} is {{"foo""}} and {{EXTENSION-PARAMETERS}} is
-{{'(() (("bar" . #t) ("baz" . "2")))}}, the
-{{Sec-WebSocket-Extensions}} header in the client's opening handshake
-will contain the string {{"foo,foo;bar;baz=2"}}.
-
-The application specifies the extensions it wishes to use by supplying
-a list of extensions as an optional argument to {{ws-connect}}. If the
-server agrees to use an extension (i.e. if the
-{{Sec-WebSocket-Extensions}} header in the server handshake contains
-the name of the extension), the extension is initialised and the
-associated transforms are applied to every frame/message.
-
-<procedure>(extension-param-value STRING EXTENSION-PARAMETERS)</procedure>
-
-Extracts the value of a parameter from a list of parameters; exactly
-the same as {{(alist-ref STRING EXTENSION-PARAMETERS string-ci=?)}}.
-
-<procedure>(valid-rsv-set! WS-CONNECTION INTEGER)</procedure>
-<procedure>(valid-rsv-set-bit! WS-CONNECTION INTEGER)</procedure>
-<procedure>(valid-rsv-unset-bit! WS-CONNECTION INTEGER)</procedure>
-
-In the absence of extensions, every incoming frame should have all
-{{RSV}} bits unset. So that the connection does not fail when a
-nonzero {{RSV}} bit is detected, an extension which uses an {{RSV}}
-bit should modify the {{ws-connection}} record so that it accepts
-nonzero {{RSV}} bits.
-
-====== The {{permessage-deflate}} extension
+==== The {{permessage-deflate}} extension
 
 This library provides an implementation of the {{permessage-deflate}}
 extension, using {{zlib}} for compression/decompression.
 
 <procedure>(permessage-deflate PARAMETERS) -> WS-EXTENSION</procedure>
 
-To offer to use this extension during the opening handshake, supply it
-as an optional argument to {{ws-connect}}.
+To offer to use this extension during the opening handshake, supply
+{{(list (permessage-deflate PARAMETERS))}} as an optional argument to
+{{ws-connect}}.
 
 The argument {{PARAMETERS}} should be a list in which each item is an
 {{alist}}, each of whose items is in turn a pairs of strings
@@ -314,7 +251,7 @@ specify the parameters to be advertised during the opening handshake.
 For example, to ask the server to use an LZ77 sliding window of length
 no greater than 1024, but to fall back to {{permessage-deflate}}
 without this parameter if the server does not support it, one might
-supply
+specify
 
 <enscript>
 '((("server_max_window_bits" . "10")) ())

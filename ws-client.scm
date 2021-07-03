@@ -27,26 +27,26 @@
 
   make-ws-frame
   ws-frame? data-frame? control-frame?
-  frame-fin frame-rsv frame-rsv-bit
+  frame-fin? frame-rsv frame-rsv-bit
   frame-opcode frame-optype frame-mask?
   frame-payload-length frame-payload-data
 
   send-frame recv-frame
 
-  ;; extension interface
+  ;; extension interface (used only by permessage-deflate.scm)
 
-   make-ws-extension
+  ;; make-ws-extension
   ;; extension-desc extension-token extension-params
-  extension-param-value
+  ;; extension-param-value
   ;; extension-desc->string
   ;; extension-desc*->string
   ;; string->extension-desc
   ;; string->extension-desc*
   ;; extensions
 
-  valid-rsv-set!
-  valid-rsv-set-bit!
-  valid-rsv-unset-bit!
+  ;; valid-rsv-set!
+  ;; valid-rsv-set-bit!
+  ;; valid-rsv-unset-bit!
   ;; frame-rsv-set!
   ;; frame-rsv-set-bit!
   ;; frame-rsv-unset-bit!
@@ -179,7 +179,7 @@
 
  (: make-ws-frame (boolean fixnum fixnum boolean integer u8vector --> ws-frame))
  (: ws-frame? (* --> boolean))
- (: frame-fin (ws-frame --> boolean))
+ (: frame-fin? (ws-frame --> boolean))
  (: frame-rsv (ws-frame --> fixnum))
  (: frame-rsv-bit (ws-frame fixnum --> boolean))
  (: frame-rsv-set! (ws-frame fixnum -> undefined))
@@ -194,12 +194,10 @@
  (: data-frame? (ws-frame --> boolean))
  (: control-frame? (ws-frame --> boolean))
 
- ;;(: make-close-frame (symbol --> ws-frame))
-
  (define-record-type ws-frame
    (make-ws-frame fin rsv op mask len data)
    ws-frame?
-   (fin  frame-fin)
+   (fin  frame-fin?)
    (rsv  frame-rsv frame-rsv-set!)
    (op   frame-opcode)
    ;; we only remember whether a frame is masked; if it is, the
@@ -222,16 +220,12 @@
 
  (define-record-printer (ws-frame f out)
    (fprintf out "#<ws-frame fin=~A rsv=~A op=~A mask=~A payload=~A (~A)>"
-	    (frame-fin f) (frame-rsv f) (frame-optype f) (frame-mask? f)
+	    (frame-fin? f) (frame-rsv f) (frame-optype f) (frame-mask? f)
 	    (if (< 12 (frame-payload-length f)) "..." (frame-payload-data f))
 	    (frame-payload-length f)))
 
  (define (data-frame? f) (data-opcode? (frame-opcode f)))
  (define (control-frame? f) (control-opcode? (frame-opcode f)))
-
- ;; (define (make-close-frame reason)
- ;;   (make-ws-frame #t 0 (optype->opcode 'connection-close) #t
- ;;		  2 (reason->close-code reason)))
 
  ;; websocket message record
  (: frames->message ((list-of ws-frame) --> ws-message))
@@ -428,7 +422,7 @@ for (size_t i = 0; i < 20; ++i) {
 	     out-frame-transform frame)))
      ;; (printf "sent: ~A\n" f) ;; DEBUG
      (send-frame* conn (frame-opcode f) (frame-payload-data f) (frame-payload-length f)
-		  (frame-mask? f) (frame-fin f) (frame-rsv f))))
+		  (frame-mask? f) (frame-fin? f) (frame-rsv f))))
 
  ;; note that send-frame* takes an opcode rather than an optype
  (: send-frame* (ws-connection fixnum u8vector
@@ -633,7 +627,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
        ;; text/bianry
        ((text binary)
 	(cond
-	 ((not (frame-fin f))
+	 ((not (frame-fin? f))
 	  (recv-message* conn op (cons f frames)))
 	 ((not (eq? 'none type))
 	  (ws-fail 'protocol-error "fragments out of order"))
@@ -643,7 +637,7 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
        ((continuation)
 	(cond
 	 ((eq? 'none type) (ws-fail 'protocol-error "nothing to continue"))
-	 ((frame-fin f)    (frames->message (reverse (cons f frames))))
+	 ((frame-fin? f)    (frames->message (reverse (cons f frames))))
 	 (else (recv-message* conn type (cons f frames)))))
        ;; ping/pong
        ((ping)
