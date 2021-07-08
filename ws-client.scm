@@ -52,8 +52,9 @@
   ;; frame-rsv-unset-bit!
   )
 
- (import scheme (chicken base) (chicken type) (chicken string)
-	 (chicken condition) (chicken io) (chicken format)
+ (import scheme (chicken base) (chicken type)
+	 (chicken memory) (chicken condition)
+	 (chicken string) (chicken io) (chicken format)
 	 (chicken foreign) (chicken blob) (chicken bitwise)
 	 (chicken random) (chicken tcp)
 	 srfi-1 srfi-4 foreigners
@@ -254,10 +255,8 @@
    (if (not (eq? '() frames))
        (let* ((f (car frames))
 	      (len (frame-payload-length f)))
-	 ;; this should be u8vector-copy!, but srfi-66 seems to be broken
-	 ((foreign-lambda* void ((u8vector trg) (u8vector src) (size_t start) (size_t len))
-			   "memcpy(trg+start, src, len);") buf (frame-payload-data f) start len)
-	 (conc-frame-payloads buf (+ start len) (cdr frames)))))
+	 (move-memory! (frame-payload-data f) buf len 0 start)
+	 (conc-frame-payloads buf (+ start len) (cdr frames)))))/
 
  (define (frames->message frames)
    (let* ((type (frame-optype (car frames)))
