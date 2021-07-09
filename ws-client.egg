@@ -4,7 +4,7 @@
 (license "BSD")
 (category web)
 (foreign-dependencies "zlib-1.2.11")
-(test-dependenceis test)
+(test-dependencies test)
 (dependencies srfi-1 foreigners string-utils base64 simple-sha1 uri-common intarweb openssl)
 (component-options (csc-options "-O3") (link-options "-L" "-lz"))
 (components
