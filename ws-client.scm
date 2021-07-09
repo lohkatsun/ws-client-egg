@@ -57,7 +57,7 @@
 	 (chicken string) (chicken io) (chicken format)
 	 (chicken foreign) (chicken blob) (chicken bitwise)
 	 (chicken random) (chicken tcp)
-	 srfi-1 srfi-4 foreigners
+	 srfi-1 srfi-4 foreigners to-hex
 	 openssl uri-common intarweb base64 simple-sha1)
 
  (define-type ws-connection (struct ws-connection))
@@ -342,21 +342,9 @@
 
  (: expected-sec-websocket-accept (string --> string))
  (define (expected-sec-websocket-accept key)
+   ;; concatenate string with magic, then base64-encode its SHA1 hash
    (let* ((s (string->sha1sum (string-append key "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))))
-     ;; convert the string representation of the SHA1 hash into a
-     ;; string of the actual bytes
-     ((foreign-lambda* void ((blob s))
-		       "
-unsigned char *ha = s;
-unsigned char *hb = ha;
-for (size_t i = 0; i < 20; ++i) {
-  *ha = 16*(*hb - ('a' <= *hb ? 87 : 48)); ++hb;
-  *ha += *hb - ('a' <= *hb ? 87 : 48); ++hb;
-  ++ha;
-}
-") s)
-     ;; base64-encode the bytestring
-     (base64-encode (substring s 0 20))))
+     (base64-encode (hex_to_str (make-string 20) s 0 40))))
 
  (: read-server-opening-handshake (input-port output-port string (list-of ws-connection)
 					      -> ws-connection))
