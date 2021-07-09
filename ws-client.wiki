@@ -303,10 +303,16 @@ examples.
 
 [[/users/loh-ka-tsun|Lo̍h Ka-tsùn]]
 
+=== Repository
+
+[[https://github.com/lohkatsun/ws-client-egg]]
+
 === License
 
 BSD
 
 === Version History
 
-; 0.2.0 : Initial release
+; 0.2:
+* 0.2.1 Added unit test, replaced some foreign dependencies
+* 0.2.0 Initial release

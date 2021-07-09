@@ -1,10 +1,11 @@
 ((synopsis "websocket client library")
-(version 0.2)
+(version 0.2.1)
 (author "Lo̍h Ka-tsùn")
 (license "BSD")
 (category web)
 (foreign-dependencies "zlib-1.2.11")
-(dependencies srfi-1 foreigners base64 simple-sha1 uri-common intarweb openssl)
+(test-dependenceis test)
+(dependencies srfi-1 foreigners string-utils base64 simple-sha1 uri-common intarweb openssl)
 (component-options (csc-options "-O3") (link-options "-L" "-lz"))
 (components
   (extension ws-client (source-dependencies utf8.scm extensions.scm permessage-deflate.scm))))
