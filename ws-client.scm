@@ -371,7 +371,7 @@ for (size_t i = 0; i < 20; ++i) {
 		  (memq 'upgrade (header-values 'connection h))
 		  ;; upgrade: websocket
 		  (header-value 'upgrade h)
-		  (string-ci=? "websocket" (car(header-value 'upgrade h)))
+		  (string-ci=? "websocket" (car (header-value 'upgrade h)))
 		  ;; sec-websocket-accept: (base64 (SHA1 (key + magic)))
 		  (string=? (expected-sec-websocket-accept key)
 			    (header-value 'sec-websocket-accept h))))
