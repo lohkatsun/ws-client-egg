@@ -33,7 +33,7 @@ Uses [[tcp6]] if it is imported together with this extension.
 
 <record>ws-connection</record>
 
-<procedure>(ws-connect STRING #!optional (list WS-EXTENSION ...)) -> WS-CONNECTION</procedure>
+<procedure>(ws-connect STRING #!optional (list WS-EXTENSION ...) (list SYMBOL ...)) -> WS-CONNECTION</procedure>
 
 The state of a WebSocket connection is stored in a record of type
 {{ws-connection}}.
@@ -49,6 +49,11 @@ The procedure {{ws-connect}} optionally accepts a list of extensions
 the client hopes to use. The only extension currently supported by
 this library is {{permessage-deflate}}; see the
 [[#the-permessage-deflateextension|relevant section]].
+
+The second optional argument is a list of flags (symbols). The only one
+currently supported is {{'strip-host}}, which strips the hostname, port,
+and scheme from the method line of the request. Some websocket implementations
+require this.
 
 ====== Sending and receiving messages
 

@@ -1,9 +1,10 @@
 (import ws-client (chicken io) (chicken format))
 
 ;; connects to localhost:9001 and sends each line read from stdin
-;; until an empty line is encountered.
+;; until an empty line is encountered. strip the host name from
+;; the request line.
 
-(define conn (ws-connect "ws://localhost:9001"))
+(define conn (ws-connect "ws://localhost:9001" '() '(strip-host)))
 
 (send-text-message conn (read-line))
 
