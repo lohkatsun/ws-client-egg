@@ -322,10 +322,11 @@
 
  ;; websocket opening handshake
 
- (: send-client-opening-handshake (output-port (struct uri-common) string (list-of ws-extension)
-					       -> output-port))
- (define (send-client-opening-handshake o wsuri key exts)
-   (let* ((host (uri-host wsuri))
+ (: send-client-opening-handshake (output-port (struct uri-common) string (list-of ws-extension) #!optional (list-of symbol)
+                                               -> output-port))
+ (define (send-client-opening-handshake o wsuri key exts #!optional (flags '()))
+   (let* ((strip-host (member 'strip-host flags))
+          (host (uri-host wsuri))
 	  (port (uri-port wsuri))
 	  (ext-offer (extension-desc*->string (join (map extension-desc* exts))))
 	  (h (headers
@@ -338,7 +339,12 @@
      ;; apparently write-request might modify out-port, so we
      ;; return this
      ;; (print h) ;; DEBUG
-     (request-port (write-request (make-request uri: wsuri port: o headers: h)))))
+     (request-port (write-request (make-request
+                                   uri: (if strip-host
+                                            (update-uri wsuri host: #f port: #f scheme: #f)
+                                            wsuri)
+                                   port: o
+                                   headers: h)))))
 
  (: expected-sec-websocket-accept (string --> string))
  (define (expected-sec-websocket-accept key)
@@ -386,8 +392,8 @@
 		       (sprintf "opening handshake unsuccessful: ~A ~A"
 				(response-code res) (response-reason res)))))))
 
- (: ws-connect (string #!optional (list-of ws-extension) -> ws-connection))
- (define (ws-connect uri #!optional (exts '()))
+ (: ws-connect (string #!optional (list-of ws-extension) (list-of symbol) -> ws-connection))
+ (define (ws-connect uri #!optional (exts '()) (flags '()))
    (let*-values
        (((wsuri) (ws-uri uri))
 	((host) (uri-host wsuri))
@@ -398,7 +404,7 @@
 	 (if (eq? 'wss (uri-scheme wsuri))
 	     (ssl-connect* hostname: host port: port)
 	     (tcp-connect host port)))
-	((o*) (send-client-opening-handshake o wsuri key exts)))
+	((o*) (send-client-opening-handshake o wsuri key exts flags)))
      ;; read opening handshake
      (read-server-opening-handshake i o key exts)))
 
