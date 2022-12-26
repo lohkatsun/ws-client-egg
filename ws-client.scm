@@ -338,7 +338,6 @@
 		(sec-websocket-extensions #(,ext-offer raw))))))
      ;; apparently write-request might modify out-port, so we
      ;; return this
-     ;; (print h) ;; DEBUG
      (request-port (write-request (make-request
                                    uri: (if strip-host
                                             (update-uri wsuri host: #f port: #f scheme: #f)
@@ -374,11 +373,9 @@
 	(let ((conn (make-ws-connection i o 0 exts))
 	      (edl (string->extension-desc*
 		    (string-intersperse (header-values 'sec-websocket-extensions h) ","))))
-	  ;; (print h) ;; DEBUG
 	  ;; use only those extensions which accept the server parameters
 	  (extensions-set! conn
 			   (filter (lambda (e) (extension-in-desc* e edl)) exts))
-	  ;; (print (extensions conn)) ;; DEBUG
 	  ;; initialise each extensions
 	  (for-each
 	   (lambda (e)
@@ -413,7 +410,6 @@
    (let ((f (apply-extension-transforms
 	     (extensions conn)
 	     out-frame-transform frame)))
-     ;; (printf "sent: ~A\n" f) ;; DEBUG
      (send-frame* conn (frame-opcode f) (frame-payload-data f) (frame-payload-length f)
 		  (frame-mask? f) (frame-fin? f) (frame-rsv f))))
 
@@ -587,7 +583,6 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
        (ws-close conn (get-condition-property e 'fail 'reason)))))
 
  (define (recv-message-loop* conn handler count)
-   ;; (print count) ;; DEBUG
    (let ((m (recv-message conn)))
      (if (ws-message? m) (begin
 			   (handler m)
@@ -613,7 +608,6 @@ for (size_t i = 0; i < len; ++i) *(buf++) ^= key[i%4];
 	  (op (frame-optype f))
 	  (data (frame-payload-data f))
 	  (len (frame-payload-length f)))
-     ;; (printf "rcvd: ~A\n" f) ;; DEBUG
      ;; consume continuation & control frames until a complete message
      ;; can be assembled
      (case op
