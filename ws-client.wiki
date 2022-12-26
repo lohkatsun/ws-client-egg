@@ -33,15 +33,24 @@ Uses [[tcp6]] if it is imported together with this extension.
 
 <record>ws-connection</record>
 
-<procedure>(ws-connect STRING #!optional (list WS-EXTENSION ...) (list SYMBOL ...)) -> WS-CONNECTION</procedure>
+<procedure>(ws-connect STRING #!optional (list WS-EXTENSION ...) (list SYMBOL ...)) -> (or WS-CONNECTION RECORD)</procedure>
 
 The state of a WebSocket connection is stored in a record of type
 {{ws-connection}}.
 
-The procedure {{ws-connect}} establishes a WebSocket connection to a
-server. The argument {{STRING}} should be a valid
+The procedure {{ws-connect}} attempts to establish a WebSocket
+connection to a server. The argument {{STRING}} should be a valid
 [[https://www.rfc-editor.org/rfc/rfc6455.html#section-3|WebSocket
 URI]].
+
+If the opening handshake for the WebSocket protocol succeeds, this
+procedure returns a {{ws-connection}} record. If it receives a HTTP
+response from the server with status code other than 101, it instead
+returns a record containing the HTTP response (see
+[[/egg/intarweb|intarweb]]). The user should call
+{{is-ws-connection?}} on the result of {{ws-connect}} to check if this
+has happened and, in the case of an unsuccessful handshake, process
+the HTTP response accordingly, e.g. by following a redirect.
 
 To use WebSockets over TLS, supply a URI with scheme {{wss}}.
 
@@ -50,10 +59,10 @@ the client hopes to use. The only extension currently supported by
 this library is {{permessage-deflate}}; see the
 [[#the-permessage-deflateextension|relevant section]].
 
-The second optional argument is a list of flags (symbols). The only one
-currently supported is {{'strip-host}}, which strips the hostname, port,
-and scheme from the method line of the request. Some websocket implementations
-require this.
+The second optional argument is a list of flags (symbols). The only
+one currently supported is {{'strip-host}}, which strips the hostname,
+port, and scheme from the method line of the client handshake. Some
+non-compliant implementations seem to require this.
 
 ====== Sending and receiving messages
 
@@ -318,6 +327,9 @@ BSD
 
 === Version History
 
+; 1.0:
+* 1.0.0 Modify opening handshake behaviour
+
 ; 0.2:
-* 0.2.1 Added unit test, replaced some foreign dependencies
+* 0.2.1 Add unit test, replace some foreign dependencies
 * 0.2.0 Initial release
