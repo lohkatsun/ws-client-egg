@@ -353,7 +353,7 @@
      (base64-encode (hex_to_str (make-string 20) s 0 40))))
 
  (: read-server-opening-handshake (input-port output-port string (list-of ws-extension)
-					      -> ws-connection))
+					      -> (or ws-connection (struct response))))
  (define (read-server-opening-handshake i o key exts)
    (let* ((res (read-response i))
 	  (h (response-headers res)))
@@ -386,13 +386,13 @@
 	   (extensions conn))
 	  ;; finally, return the connection record
 	  conn))
-       ;; for responses other than 101, do nothing except report it to
-       ;; the user.
-       (else (ws-error 'ws-connect
-		       (sprintf "opening handshake unsuccessful: ~A ~A"
-				(response-code res) (response-reason res)))))))
+       ;; for responses other than 101, return the HTTP response for
+       ;; the caller to process accordingly e.g. by following a
+       ;; redirect.
+       (else res))))
 
- (: ws-connect (string #!optional (list-of ws-extension) (list-of symbol) -> ws-connection))
+ (: ws-connect (string #!optional (list-of ws-extension) (list-of symbol)
+		       -> (or ws-connection (struct response))))
  (define (ws-connect uri #!optional (exts '()) (flags '()))
    (let*-values
        (((wsuri) (ws-uri uri))
