@@ -352,7 +352,7 @@
    (let* ((s (string->sha1sum (string-append key "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))))
      (base64-encode (hex_to_str (make-string 20) s 0 40))))
 
- (: read-server-opening-handshake (input-port output-port string (list-of ws-connection)
+ (: read-server-opening-handshake (input-port output-port string (list-of ws-extension)
 					      -> ws-connection))
  (define (read-server-opening-handshake i o key exts)
    (let* ((res (read-response i))
